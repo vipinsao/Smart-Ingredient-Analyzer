@@ -56,24 +56,6 @@ Each classification comes with a brief reason, empowering users to make healthie
 
 ---
 
-## 📸 Screenshots
-
-### 🏠 Home Page
-![Home Page](screenshots/home.png)
-
-### 📤 Upload Page
-![Upload Page](screenshots/upload.png)
-
-### 📷 Capture from Camera
-![Camera Page](screenshots/camera.png)
-
-### 🧪 Analysis Result
-![Result Page](screenshots/result.png)
-
-> Make sure to include these screenshots inside a `/screenshots` folder in your repo.
-
----
-
 ## 📦 Installation & Setup
 
 ### 🔧 Prerequisites
