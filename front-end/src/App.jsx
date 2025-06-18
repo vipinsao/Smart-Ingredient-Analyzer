@@ -6,6 +6,7 @@ import ModeSelection from "./components/ModeSelection";
 import ImagePreview from "./components/ImagePreview";
 import AnalysisResult from "./components/AnalysisResult";
 import HowItWorks from "./components/HowItWorks";
+import { RingLoader } from "react-spinners";
 import axios from "axios";
 
 function App() {
