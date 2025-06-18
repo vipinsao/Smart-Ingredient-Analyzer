@@ -85,11 +85,7 @@ function App() {
           />
         )}
 
-        {analysis ? (
-          <AnalysisResult analysis={analysis} />
-        ) : (
-          <RingLoader size="60" loading={true} />
-        )}
+        {analysis && <AnalysisResult analysis={analysis} loading={loading} />}
       </div>
     </div>
   );
