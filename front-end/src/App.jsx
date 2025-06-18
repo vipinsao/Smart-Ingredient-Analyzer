@@ -56,7 +56,7 @@ function App() {
       <div className="max-w-4xl mx-auto shadow-xl bg-white rounded-2xl p-5 sm:p-8 space-y-6">
         <a href="/">
           <h1 className="text-2xl sm:text-3xl font-bold text-center mb-4 text-blue-800">
-            🧠 Smart Ingredient Analyzer
+            🧠 AI Ingredient Analyzer
           </h1>
         </a>
 
