@@ -1,6 +1,5 @@
 // App.jsx
 import React, { useRef, useState } from "react";
-import { Loader } from "@aws-amplify/ui-react";
 import WebcamCapture from "./components/WebcamCapture";
 import ImageUploader from "./components/ImageUploader";
 import ModeSelection from "./components/ModeSelection";
@@ -89,7 +88,7 @@ function App() {
         {analysis ? (
           <AnalysisResult analysis={analysis} />
         ) : (
-          <Loader variation="linear" />
+          <RingLoader size="60" loading={true} />
         )}
       </div>
     </div>
