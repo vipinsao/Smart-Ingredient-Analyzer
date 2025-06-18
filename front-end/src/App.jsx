@@ -85,7 +85,17 @@ function App() {
           />
         )}
 
-        {analysis && <AnalysisResult analysis={analysis} loading={loading} />}
+        {imageSrc && (
+          <>
+            {loading ? (
+              <div className="flex justify-center items-center min-h-[200px]">
+                <RingLoader size={70} color="#3B82F6" />
+              </div>
+            ) : (
+              analysis && <AnalysisResult analysis={analysis} />
+            )}
+          </>
+        )}
       </div>
     </div>
   );

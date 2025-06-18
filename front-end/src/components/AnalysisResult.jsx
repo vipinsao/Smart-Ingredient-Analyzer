@@ -1,14 +1,4 @@
-import { RingLoader } from "react-spinners";
-
-const AnalysisResult = ({ analysis, loading }) => {
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center min-h-[200px]">
-        <RingLoader size={70} color="#10B981" />
-      </div>
-    );
-  }
-
+const AnalysisResult = ({ analysis }) => {
   return (
     <div className="bg-gray-50 p-4 sm:p-5 rounded-xl shadow space-y-4 overflow-x-auto">
       <div>
