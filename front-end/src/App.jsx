@@ -33,7 +33,7 @@ function App() {
     try {
       const API = import.meta.env.VITE_API_URL;
       console.log(API);
-      const response = await axios.post(`${API}/analyze`, {
+      const response = await axios.post(`${API}/api/analyze`, {
         image: imageSrc,
       });
       setAnalysis(response.data.analysis);
