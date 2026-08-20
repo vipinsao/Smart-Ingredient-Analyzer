@@ -218,7 +218,7 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
       requestId: req.id,
       totalMs: result.processingTime,
       ocrMs: ocrResult.processingTime,
-      aiMs: groqResult.aiTime,
+      aiMs: analysisResult.aiTime,
       ocrMethod: ocrResult.method,
       grounded: analysisResult.grounded,
       ingredients: analysisResult.analysis.length,
