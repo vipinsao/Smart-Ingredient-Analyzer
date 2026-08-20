@@ -82,6 +82,7 @@ export async function prepareForVision(buffer, { isMobile = false } = {}) {
 export async function preprocessForOcr(buffer, options = {}) {
   const {
     maxWidth = OCR_PREPROCESS.maxWidth,
+    compressionLevel = OCR_PREPROCESS.compressionLevel,
     grayscale = true,
     normalise = true,
     sharpen = true,
@@ -102,7 +103,7 @@ export async function preprocessForOcr(buffer, options = {}) {
   if (normalise) pipeline = pipeline.normalise();
   if (sharpen) pipeline = pipeline.sharpen(OCR_PREPROCESS.sharpen);
 
-  const output = await pipeline.png({ compressionLevel: 6 }).toBuffer();
+  const output = await pipeline.png({ compressionLevel }).toBuffer();
 
   logger.debug("preprocessed image for OCR", {
     sourceBytes: buffer.length,

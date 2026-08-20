@@ -105,6 +105,9 @@ export const GEMINI_TIMEOUT_MS = 15000;
 
 export const OCR_PREPROCESS = {
   maxWidth: 2000,
+  // sharp's own default. Named here so scripts/bench-preprocess.js can vary it;
+  // the sweep found no time difference this hardware can resolve, so it stays.
+  compressionLevel: 6,
   sharpen: { sigma: 1 },
 };
 
