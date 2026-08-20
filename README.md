@@ -328,17 +328,19 @@ across levels 1–4:
 
 ### What did not work
 
-- **Downscaling the image before OCR.** `maxWidth: 1200` saves about 950ms and
-  turns `INS1422, INS415 ... INS211` into `NS1422 ... NS211`. Those identifiers
-  are exactly what BM25 matches on, so it is not a speed-up, it is a broken
-  retriever. Reverted. `npm run bench:preprocess`
+- **Downscaling the image before OCR.** `maxWidth: 1200` cut the sample from
+  3,270ms to 2,024ms and turned `INS1422, INS415 ... INS211` into
+  `NS1422 ... NS211`. Those identifiers are exactly what BM25 matches on, so it
+  is not a speed-up, it is a broken retriever. Reverted.
+  `npm run bench:preprocess`
 - **Dropping `sharpen` or `normalise`.** Each saves 250–350ms of sharp time and
   each damages the extracted text on at least one of the three test subjects.
   Kept.
-- **`png compressionLevel: 0`.** Byte-identical OCR output and no time
-  difference this machine can resolve — the same configuration measured 2,189ms
-  and 2,663ms of recognition on different runs, so a 200ms effect is inside the
-  noise. Not changed.
+- **`png compressionLevel: 0`.** Byte-identical OCR output, and no time
+  difference this machine can resolve. The *unchanged* configuration measured
+  2,663ms, 3,345ms and 3,665ms of recognition on three runs of the same sweep,
+  so an effect of a couple of hundred milliseconds cannot be distinguished from
+  the machine. Not changed.
 
 Nothing in `OCR_PREPROCESS` changed as a result of this work. The benchmark
 that says why is committed.
