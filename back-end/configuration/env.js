@@ -14,6 +14,12 @@ export const env = {
   // was shut down by Groq on 2026-08-16.
   // Current IDs: https://console.groq.com/docs/models
   GROQ_MODEL: process.env.GROQ_MODEL || "openai/gpt-oss-120b",
+  // Where the OpenAI-compatible chat-completions call goes. Overridable so the
+  // pipeline can be profiled and load-tested against a local stub without a
+  // provider key and without paying for thousands of tokens per run; see
+  // scripts/stub-llm.js. Production leaves it unset.
+  GROQ_BASE_URL:
+    process.env.GROQ_BASE_URL || "https://api.groq.com/openai/v1/chat/completions",
   // Optional. When present, Gemini Vision is tried for OCR before Tesseract.
   GEMINI_API_KEY: process.env.GEMINI_API_KEY,
 };

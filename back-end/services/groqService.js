@@ -28,7 +28,7 @@ Every element must have exactly these keys: "ingredient" (string),
 
 export class GroqService {
   constructor() {
-    this.baseUrl = "https://api.groq.com/openai/v1/chat/completions";
+    this.baseUrl = env.GROQ_BASE_URL;
     this.apiKey = env.GROQ_API_KEY;
     this.model = env.GROQ_MODEL;
   }

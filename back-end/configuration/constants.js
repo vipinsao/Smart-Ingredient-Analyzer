@@ -60,17 +60,27 @@ export const SUPPORTED_IMAGE_SIGNATURES = [
   { format: "webp", bytes: [0x52, 0x49, 0x46, 0x46] }, // "RIFF", verified further at offset 8
 ];
 
+/** Positive integer from the environment, or the shipped default. */
+function limitFromEnv(name, fallback) {
+  const value = Number(process.env[name]);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
 // Global limiter - protects the process.
 export const RATE_LIMIT_CONFIG = {
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: limitFromEnv("RATE_LIMIT_MAX", 100),
 };
 
 // Route limiter - /api/analyze costs OCR CPU and one model call per request,
 // so it gets a tighter per-IP budget than the rest of the API.
+//
+// Overridable because a load test drives hundreds of requests from one address
+// and would otherwise measure the rate limiter rather than the pipeline. The
+// deployed app leaves both unset and gets the numbers above.
 export const ANALYZE_RATE_LIMIT = {
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: limitFromEnv("ANALYZE_RATE_LIMIT_MAX", 20),
 };
 
 export const LLM_TIMEOUT = {
