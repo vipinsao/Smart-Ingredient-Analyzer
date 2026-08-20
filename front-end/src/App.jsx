@@ -301,8 +301,19 @@ function App() {
         console.error("Error analyzing image:", error);
         setErrorMessage("❌ Failed to analyze image. Please try again.");
       }
+    } else if (imageSrc) {
+      // Nothing succeeded and nothing is in flight - the background run failed
+      // and cleared isProcessing without leaving a promise behind. The button
+      // re-enabled and re-labelled itself "Analyze Ingredients", and neither
+      // branch above matched, so tapping it did nothing at all, for ever. The
+      // only escape was "Retake", which is not what the button said.
+      //
+      // This is the state a visitor lands in when the first request to a cold
+      // free-tier instance times out, which is to say: the common case.
+      setErrorMessage("");
+      startBackgroundProcessing(imageSrc);
     }
-  }, [analysisReady, fullResults, processingState.analysisPromise]);
+  }, [analysisReady, fullResults, processingState.analysisPromise, imageSrc, startBackgroundProcessing]);
 
   const reset = useCallback(() => {
     setImageSrc(null);
