@@ -27,6 +27,19 @@ export async function inspectImage(buffer) {
     }
     return metadata;
   } catch (error) {
+    // An image that is perfectly valid but enormous is a different failure from
+    // one that is corrupt, and telling someone to "upload a JPG" when they just
+    // uploaded a JPG is the kind of message that wastes an afternoon.
+    if (/pixel limit/i.test(error.message ?? "")) {
+      throw new AppError(
+        "That image is too large to process. Please upload a smaller photo.",
+        {
+          code: "IMAGE_TOO_MANY_PIXELS",
+          statusCode: 413,
+          details: `over the ${OCR_PREPROCESS.limitInputPixels} pixel ceiling`,
+        }
+      );
+    }
     throw new AppError(
       "Image could not be decoded. Please upload a JPG, PNG or WebP photo.",
       { code: "UNREADABLE_IMAGE", statusCode: 400, details: error.message }

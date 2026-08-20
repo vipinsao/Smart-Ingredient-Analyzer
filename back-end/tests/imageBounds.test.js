@@ -63,7 +63,14 @@ test("the decoded-pixel ceiling is stated in this repo, not inherited from sharp
 
   await assert.rejects(
     () => preprocessForOcr(huge, { }),
-    (error) => error.code === "UNREADABLE_IMAGE",
+    (error) => {
+      // Its own code and a 413, not the generic "could not be decoded" 400:
+      // the image is valid, it is just enormous, and the message has to say so
+      // or it sends someone off re-encoding a file that was never corrupt.
+      assert.equal(error.code, "IMAGE_TOO_MANY_PIXELS");
+      assert.equal(error.statusCode, 413);
+      return true;
+    },
     "144M pixels is over the 80M ceiling and must be refused"
   );
 });
