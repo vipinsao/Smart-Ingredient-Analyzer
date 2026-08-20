@@ -23,10 +23,15 @@ const SMALL_IMAGE = await sharp({
  * the pool torn down after - otherwise the second test silently measures the
  * first test's pool.
  */
-async function withPool({ size = 1, maxQueue = 4 }, body) {
-  const previous = { size: process.env.OCR_POOL_SIZE, maxQueue: process.env.OCR_MAX_QUEUE };
+async function withPool({ size = 1, maxQueue = 4, jobTimeoutMs }, body) {
+  const previous = {
+    size: process.env.OCR_POOL_SIZE,
+    maxQueue: process.env.OCR_MAX_QUEUE,
+    jobTimeoutMs: process.env.OCR_JOB_TIMEOUT_MS,
+  };
   process.env.OCR_POOL_SIZE = String(size);
   process.env.OCR_MAX_QUEUE = String(maxQueue);
+  if (jobTimeoutMs !== undefined) process.env.OCR_JOB_TIMEOUT_MS = String(jobTimeoutMs);
 
   const pool = await import("../services/ocrPool.js");
   await pool.terminateOcrPool();
@@ -40,6 +45,8 @@ async function withPool({ size = 1, maxQueue = 4 }, body) {
     else process.env.OCR_POOL_SIZE = previous.size;
     if (previous.maxQueue === undefined) delete process.env.OCR_MAX_QUEUE;
     else process.env.OCR_MAX_QUEUE = previous.maxQueue;
+    if (previous.jobTimeoutMs === undefined) delete process.env.OCR_JOB_TIMEOUT_MS;
+    else process.env.OCR_JOB_TIMEOUT_MS = previous.jobTimeoutMs;
   }
 }
 
@@ -126,4 +133,64 @@ test("terminate is safe on a pool that was never built, and on one already termi
   assert.deepEqual(pool.ocrPoolStats(), { started: false });
   await pool.terminateOcrPool();
   assert.deepEqual(pool.ocrPoolStats(), { started: false });
+});
+
+// ---------------------------------------------------------------------------
+// The queue bound stops an unbounded backlog. On its own it made the 503 the
+// mechanism of the denial: with one worker and no time bound, one slow job held
+// the pool and everybody else was refused instantly. A 2000x20000 upload -
+// 5.46MB, under the 8MB cap - measured 126.2s against 11.4s for a normal label.
+// ---------------------------------------------------------------------------
+
+test("a recognition that overruns its deadline is abandoned, not waited on", async () => {
+  // 1ms is unreachable, so this deterministically exercises the timeout path
+  // without needing a hostile image or a 30s test.
+  await withPool({ size: 1, maxQueue: 4, jobTimeoutMs: 1 }, async (pool) => {
+    await assert.rejects(
+      () => pool.recognize(SMALL_IMAGE),
+      (error) => {
+        assert.equal(error.code, "OCR_TIMEOUT");
+        assert.equal(error.statusCode, 504);
+        return true;
+      }
+    );
+  });
+});
+
+test("the pool rebuilds itself after a deadline, rather than staying held", async () => {
+  await withPool({ size: 1, maxQueue: 4, jobTimeoutMs: 1 }, async (pool) => {
+    await assert.rejects(() => pool.recognize(SMALL_IMAGE));
+
+    // The poisoned pool was dropped: the worker holding the CPU is terminated
+    // rather than left running while its slot is handed back.
+    assert.deepEqual(pool.ocrPoolStats(), { started: false });
+
+    // And the next request gets a working pool with a usable deadline.
+    process.env.OCR_JOB_TIMEOUT_MS = "30000";
+    const result = await pool.recognize(SMALL_IMAGE);
+    assert.equal(typeof result.data.text, "string");
+    assert.equal(pool.ocrPoolStats().workers, 1);
+  });
+});
+
+test("callers queued behind an abandoned job are released, not left hanging", async () => {
+  await withPool({ size: 1, maxQueue: 4, jobTimeoutMs: 60 }, async (pool) => {
+    const results = await Promise.allSettled([
+      pool.recognize(SMALL_IMAGE),
+      pool.recognize(SMALL_IMAGE),
+      pool.recognize(SMALL_IMAGE),
+    ]);
+
+    // Whatever the split between timeouts and successes, nothing may hang: the
+    // point of the test is that all three promises settle.
+    assert.equal(results.length, 3);
+    for (const result of results) {
+      if (result.status === "rejected") {
+        assert.ok(
+          ["OCR_TIMEOUT", "OCR_BUSY"].includes(result.reason.code),
+          `unexpected rejection: ${result.reason.code} ${result.reason.message}`
+        );
+      }
+    }
+  });
 });

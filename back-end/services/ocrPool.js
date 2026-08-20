@@ -66,6 +66,31 @@ export const DEFAULT_POOL_SIZE = 1;
  */
 export const DEFAULT_MAX_QUEUE = 4;
 
+/**
+ * Deadline for one recognition, after which the worker running it is destroyed.
+ *
+ * The queue bound above stops an unbounded backlog, but on its own it made the
+ * 503 the *mechanism* of a denial rather than a defence against it: with one
+ * worker and no time bound, a single slow job held the pool and everyone else
+ * was refused instantly. There was no timeout and no abort on the scheduler
+ * job, so "slow" meant "for as long as the attacker chose".
+ *
+ * The pre-processing pixel cap (OCR_PREPROCESS.maxPixels) is the first half of
+ * the fix and bounds the work by construction. This is the second half, and it
+ * is the one that does not depend on having predicted the input: whatever gets
+ * through, it stops after 30s.
+ *
+ * 30s against a measured 11.4s for a full-page 2000x1500 of dense text on one
+ * core - roughly 3x the worst legitimate request seen on the slowest hardware
+ * this targets.
+ *
+ * A timed-out job cannot be cancelled - tesseract.js exposes no abort - so the
+ * worker is terminated and the pool rebuilt. Rejecting the caller while leaving
+ * the worker chewing would free the semaphore slot and not the CPU, which is
+ * the same denial with better bookkeeping.
+ */
+export const DEFAULT_JOB_TIMEOUT_MS = 30_000;
+
 function readSize(name, fallback) {
   const raw = Number(process.env[name]);
   return Number.isInteger(raw) && raw > 0 ? raw : fallback;
@@ -83,6 +108,7 @@ function ensurePool() {
 
   const size = readSize("OCR_POOL_SIZE", DEFAULT_POOL_SIZE);
   const maxQueue = readSize("OCR_MAX_QUEUE", DEFAULT_MAX_QUEUE);
+  const jobTimeoutMs = readSize("OCR_JOB_TIMEOUT_MS", DEFAULT_JOB_TIMEOUT_MS);
   const started = performance.now();
 
   const scheduler = Tesseract.createScheduler();
@@ -108,12 +134,13 @@ function ensurePool() {
     logger.info("ocr pool ready", {
       workers: size,
       maxQueue,
+      jobTimeoutMs,
       ms: Math.round(performance.now() - started),
     });
     return workers;
   })();
 
-  pool = { scheduler, ready, size, maxQueue, inFlight: 0, waiting: [], queued: 0 };
+  pool = { scheduler, ready, size, maxQueue, jobTimeoutMs, inFlight: 0, waiting: [], queued: 0, poisoned: false };
 
   // A failed build must not stay cached, or the process serves 500s forever
   // instead of retrying on the next request. Attached after the assignment so
@@ -145,11 +172,18 @@ function acquire(current) {
 
   current.queued += 1;
   const queuedAt = performance.now();
-  return new Promise((resolve) => {
-    current.waiting.push(() => {
-      current.queued -= 1;
-      current.inFlight += 1;
-      resolve(Math.round(performance.now() - queuedAt));
+
+  // A waiter is an object rather than a bare callback because it can be woken
+  // two ways: a slot frees (resolve), or the pool is destroyed under it
+  // (reject). Before the deadline existed there was only one way.
+  return new Promise((resolve, reject) => {
+    current.waiting.push({
+      resolve: () => {
+        current.queued -= 1;
+        current.inFlight += 1;
+        resolve(Math.round(performance.now() - queuedAt));
+      },
+      reject,
     });
   });
 }
@@ -157,7 +191,7 @@ function acquire(current) {
 function release(current) {
   current.inFlight -= 1;
   const next = current.waiting.shift();
-  if (next) next();
+  if (next) next.resolve();
 }
 
 /**
@@ -190,11 +224,71 @@ export async function recognize(image) {
   try {
     await current.ready;
     const started = performance.now();
-    const result = await current.scheduler.addJob("recognize", image);
+    const result = await withDeadline(current, current.scheduler.addJob("recognize", image));
     return { data: result.data, waitMs, recogniseMs: Math.round(performance.now() - started) };
   } finally {
     release(current);
   }
+}
+
+/**
+ * Race one job against the pool's deadline. Losing the race destroys the pool.
+ *
+ * The rejected promise from `addJob` is deliberately still awaited-and-ignored
+ * on the timeout path: it settles when the terminated worker's channel closes,
+ * and an unhandled rejection there would be logged as a crash in a path that is
+ * working exactly as designed.
+ */
+function withDeadline(current, job) {
+  job.catch(() => {});
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      poisonPool(current, `a recognition exceeded ${current.jobTimeoutMs}ms`);
+      reject(
+        new AppError("That image took too long to read. Try a smaller or simpler photo.", {
+          code: "OCR_TIMEOUT",
+          statusCode: 504,
+          details: `exceeded ${current.jobTimeoutMs}ms`,
+        })
+      );
+    }, current.jobTimeoutMs);
+
+    job.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); }
+    );
+  });
+}
+
+/**
+ * Destroy a pool whose worker cannot be trusted to stop, and free anyone
+ * waiting on it.
+ *
+ * The queued callers are rejected rather than migrated: they were queued behind
+ * a job that has just been abandoned mid-flight, the workers they were waiting
+ * for are being terminated, and a 503 telling them to retry is both true and
+ * immediate. Silently re-queueing them onto a pool that is still being rebuilt
+ * is how a queue turns into a hang.
+ */
+function poisonPool(current, reason) {
+  if (current.poisoned) return;
+  current.poisoned = true;
+  logger.warn("terminating the ocr pool", { reason });
+
+  if (pool === current) pool = null;
+
+  const waiting = current.waiting.splice(0, current.waiting.length);
+  current.queued = 0;
+  for (const wake of waiting) wake.reject(new AppError("The analyzer is restarting. Please try again.", {
+    code: "OCR_BUSY",
+    statusCode: 503,
+    details: reason,
+  }));
+
+  current.ready
+    .then((workers) => Promise.all(workers.map((worker) => worker.terminate())))
+    .catch((error) => logger.warn("could not terminate a poisoned ocr pool", { reason: error?.message }));
 }
 
 /**
