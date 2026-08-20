@@ -28,7 +28,7 @@ table, and not what the design was hoping for. The reading, the three questions
 where dense retrieval still earns its keep, and the one where the fusion throws
 that win away, are under [Measured results](#measured-results).
 
-`cd back-end && npm test` runs 99 unit tests on the same terms: no key, no
+`cd back-end && npm test` runs 113 unit tests on the same terms: no key, no
 network, about 35 seconds.
 
 **What that command does not measure is the generation half**, and that is still
@@ -480,7 +480,7 @@ Frontend on http://localhost:8080, API on http://localhost:5000.
 
 ```bash
 cd back-end
-npm test              # 99 tests, no API key, no network
+npm test              # 113 tests, no API key, no network
 npm run eval          # retrieval evaluation + ablation, reproduces every table above
 npm run eval:generation   # generation evaluation - NEEDS GROQ_API_KEY, skips cleanly without one
 npm run ingest        # rebuild the corpus from the live taxonomies
