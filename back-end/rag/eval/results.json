@@ -1,5 +1,5 @@
 {
-  "measuredAt": "2026-08-20T07:39:11.753Z",
+  "measuredAt": "2026-08-20T09:49:12.711Z",
   "corpus": {
     "model": "Xenova/all-MiniLM-L6-v2",
     "dimensions": 384,
@@ -128,10 +128,45 @@
     }
   },
   "latencyMs": {
-    "p50": 6.2138499999999794,
-    "p95": 8.315079999999966,
-    "max": 8.416410000000042
+    "p50": 9.394498999999996,
+    "p95": 16.269299000000046,
+    "max": 23.755899,
+    "measuredOn": "Intel(R) Core(TM) i5-9300H CPU @ 2.40GHz, 8 cores, v24.16.0",
+    "note": "wall clock on one machine over 40 warm queries; machine- and load-dependent, do not quote"
   },
+  "denseRankWins": [],
+  "wronglyAnswered": [
+    {
+      "question": "how many calories are in a medium banana",
+      "retrieved": "banana",
+      "cosine": 0.42,
+      "bm25": 10.5
+    },
+    {
+      "question": "what temperature should I proof sourdough at",
+      "retrieved": "n° - no",
+      "cosine": 0.163,
+      "bm25": 12.5
+    },
+    {
+      "question": "sugar",
+      "retrieved": "Sweetener",
+      "cosine": 0.481,
+      "bm25": 7.3
+    },
+    {
+      "question": "iodised salt",
+      "retrieved": "Inorganic salts",
+      "cosine": 0.459,
+      "bm25": 6.2
+    },
+    {
+      "question": "wheat flour",
+      "retrieved": "Flour treatment agent",
+      "cosine": 0.429,
+      "bm25": 10.4
+    }
+  ],
   "samplePrompt": {
     "label": "Water, Sugar, Jaggery, Tomato Paste, Tamarind (5%), Iodised Salt, Spices and Condiments, Stabilizers (INS1422, INS415), Acidity Regulators (INS260, INS334) and Preservative (INS211).",
     "ingredientsParsed": 15,

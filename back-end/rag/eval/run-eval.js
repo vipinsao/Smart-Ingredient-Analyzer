@@ -8,6 +8,7 @@
 //
 // Every number the README quotes about retrieval is produced by this file.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Retriever, ABSTAIN_MIN_COSINE, ABSTAIN_MIN_LEXICAL, DENSE_FUSION_WEIGHT } from "../retriever.js";
@@ -125,10 +126,14 @@ for (const question of questions) {
 
   signals.push({
     id: question.id,
+    question: question.question,
     category: question.category,
     inCorpus: question.expectedPassages.length > 0,
     cosine: dense[0]?.score ?? 0,
     bm25: lexical[0]?.score ?? 0,
+    // What it retrieved, not just how confident it was. A wrongly answered
+    // out-of-corpus question is only diagnosable if you can see what came back.
+    topChunk: dense[0] === undefined ? null : retriever.chunks[dense[0].index].title,
   });
 }
 
@@ -205,14 +210,67 @@ console.log(
   `  best on this set  cosine < ${best.cosine.toFixed(2)} AND bm25 < ${best.lexical.toFixed(1)}  ->  F1 ${best.f1.toFixed(2)}`
 );
 
+// The abstention failures by name. A count says the rule is wrong five times;
+// this says which five and what the corpus handed back instead, which is the
+// part that can be argued about.
+const wronglyAnswered = signals.filter(
+  (signal) => !signal.inCorpus && !abstains(signal, ABSTAIN_MIN_COSINE, ABSTAIN_MIN_LEXICAL)
+);
+console.log("\nOut-of-corpus questions the configured rule answers instead of refusing");
+for (const signal of wronglyAnswered) {
+  console.log(
+    `  "${signal.question}" -> ${signal.topChunk ?? "(nothing)"} ` +
+      `(cosine ${signal.cosine.toFixed(3)}, bm25 ${signal.bm25.toFixed(1)})`
+  );
+}
+if (wronglyAnswered.length === 0) console.log("  none");
+
 // --- Latency --------------------------------------------------------------
 const sortedLatency = [...latencies].sort((a, b) => a - b);
 const percentile = (p) => sortedLatency[Math.min(sortedLatency.length - 1, Math.floor(p * sortedLatency.length))];
 
+// Reported, but deliberately not quoted anywhere as a property of the system.
+// This is wall-clock on whatever machine happens to run it, over 40 warm
+// queries, and it moves by 3x between a laptop and a loaded CI box - so a
+// figure like "p50 5.0ms" in a README is precision the method cannot support.
+// The argument that does hold is structural and is printed with it.
 console.log(
-  `\nHybrid retrieval latency over ${latencies.length} queries (warm, embedding included): ` +
-    `p50 ${percentile(0.5).toFixed(1)}ms  p95 ${percentile(0.95).toFixed(1)}ms  max ${sortedLatency[sortedLatency.length - 1].toFixed(1)}ms`
+  `\nHybrid retrieval latency over ${latencies.length} queries (warm, embedding included), ` +
+    `on THIS machine (${os.cpus()[0]?.model ?? "unknown cpu"}, ${os.availableParallelism()} cores, ${process.version}):\n` +
+    `  p50 ${percentile(0.5).toFixed(1)}ms  p95 ${percentile(0.95).toFixed(1)}ms  max ${sortedLatency[sortedLatency.length - 1].toFixed(1)}ms\n` +
+    `  Machine- and load-dependent by construction; re-run it rather than quoting it.\n` +
+    `  The size argument does not move: ${retriever.meta.chunks} chunks x ${retriever.meta.dimensions} dims = ` +
+    `${((retriever.meta.chunks * retriever.meta.dimensions) / 1000).toFixed(0)}k multiply-adds per query, ` +
+    `against a model call measured in hundreds of milliseconds.`
 );
+
+// Which questions dense retrieval actually earns its place on. The ablation
+// table says hybrid does not beat lexical overall; this says where dense still
+// contributes, which is the reason it is kept at all.
+console.log("\nQuestions where dense retrieval ranks the correct passage higher than BM25");
+const rankOf = (results, expectedPassages) => {
+  const index = results.findIndex((chunk) => expectedPassages.includes(chunk.passageId));
+  return index === -1 ? null : index + 1;
+};
+let anyDenseWin = false;
+for (const question of inCorpus) {
+  const [dense, lexical, hybrid] = await Promise.all(
+    MODES.map((mode) => retriever.retrieve(question.question, { topK: 5, mode }))
+  );
+  const ranks = {
+    dense: rankOf(dense.results, question.expectedPassages),
+    lexical: rankOf(lexical.results, question.expectedPassages),
+    hybrid: rankOf(hybrid.results, question.expectedPassages),
+  };
+  if (ranks.dense !== null && (ranks.lexical === null || ranks.dense < ranks.lexical)) {
+    anyDenseWin = true;
+    console.log(
+      `  "${question.question}" -> dense rank ${ranks.dense}, ` +
+        `lexical rank ${ranks.lexical ?? "not in top 5"}, hybrid rank ${ranks.hybrid ?? "not in top 5"}`
+    );
+  }
+}
+if (!anyDenseWin) console.log("  none");
 
 console.log("\nQuestions no retrieval mode answers at k=5");
 let anyMiss = false;
@@ -277,7 +335,22 @@ const results = {
     byCategory: outByCategory,
     best,
   },
-  latencyMs: { p50: percentile(0.5), p95: percentile(0.95), max: sortedLatency[sortedLatency.length - 1] },
+  // Recorded with the machine that produced it. Without that, the number gets
+  // quoted somewhere as if it were a property of the system.
+  latencyMs: {
+    p50: percentile(0.5),
+    p95: percentile(0.95),
+    max: sortedLatency[sortedLatency.length - 1],
+    measuredOn: `${os.cpus()[0]?.model ?? "unknown cpu"}, ${os.availableParallelism()} cores, ${process.version}`,
+    note: "wall clock on one machine over 40 warm queries; machine- and load-dependent, do not quote",
+  },
+  denseRankWins: [],
+  wronglyAnswered: wronglyAnswered.map((signal) => ({
+    question: signal.question,
+    retrieved: signal.topChunk,
+    cosine: Number(signal.cosine.toFixed(3)),
+    bm25: Number(signal.bm25.toFixed(1)),
+  })),
   samplePrompt: {
     label: SAMPLE_LABEL,
     ingredientsParsed: sampleNames.length,
