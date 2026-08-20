@@ -78,7 +78,7 @@ export const DEFAULT_MAX_QUEUE = 4;
  * The pre-processing pixel cap (OCR_PREPROCESS.maxPixels) is the first half of
  * the fix and bounds the work by construction. This is the second half, and it
  * is the one that does not depend on having predicted the input: whatever gets
- * through, it stops after 30s.
+ * through, it stops after the deadline below.
  *
  * 60s, and the first value tried here was 30s, which measurement rejected.
  *

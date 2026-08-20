@@ -51,10 +51,17 @@ export const MIN_INGREDIENT_SCORE = 2;
 /**
  * Score OCR output on how much it looks like a food label.
  *
- * This is what stops a photo of a cat from being sent to the model and coming
- * back as a confident nutritional analysis of nothing. It is a heuristic, not
- * a classifier: it counts ingredient vocabulary, INS additive codes,
- * percentages, nutrition patterns and list punctuation.
+ * It counts ingredient vocabulary, INS additive codes, percentages, nutrition
+ * patterns and list punctuation, and subtracts for the short-token signature of
+ * OCR noise.
+ *
+ * Be clear about what the threshold actually buys: MIN_INGREDIENT_SCORE is 2 and
+ * the smallest positive signal is 3, so a single keyword - or one percentage, or
+ * three commas - clears it. This filters near-empty and pure-noise OCR output.
+ * It does NOT classify subject matter: a photo that yields one food-adjacent
+ * token will pass. What stops an unrelated photo producing a confident verdict
+ * is downstream - retrieval finds no passage and the ingredient is refused
+ * rather than guessed.
  */
 export function validateIngredientText(text) {
   if (typeof text !== "string" || text.trim().length < 10) {
