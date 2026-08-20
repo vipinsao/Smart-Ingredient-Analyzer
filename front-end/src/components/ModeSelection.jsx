@@ -25,10 +25,10 @@ const ModeSelection = ({ setMode }) => {
             </div>
             <div className="space-y-1">
               <div className="font-bold text-lg sm:text-xl">Take Photo</div>
-              <div className="text-sm opacity-90">
+              <div className="text-sm">
                 {isMobile ? "Use camera" : "Use webcam"}
               </div>
-              <div className="text-xs opacity-75">
+              <div className="text-xs">
                 Real-time capture
               </div>
             </div>
@@ -37,7 +37,7 @@ const ModeSelection = ({ setMode }) => {
         
         <button
           onClick={() => setMode("upload")}
-          className="bg-gradient-to-br from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white py-6 sm:py-8 px-6 rounded-2xl transition-all transform hover:scale-105 active:scale-95 shadow-xl cursor-pointer group"
+          className="bg-gradient-to-br from-green-700 to-green-800 hover:from-green-800 hover:to-green-900 text-white py-6 sm:py-8 px-6 rounded-2xl transition-all transform hover:scale-105 active:scale-95 shadow-xl cursor-pointer group"
         >
           <div className="space-y-3">
             <div className="text-4xl sm:text-5xl group-hover:scale-110 transition-transform duration-300">
@@ -45,10 +45,10 @@ const ModeSelection = ({ setMode }) => {
             </div>
             <div className="space-y-1">
               <div className="font-bold text-lg sm:text-xl">Upload Image</div>
-              <div className="text-sm opacity-90">
+              <div className="text-sm">
                 From gallery
               </div>
-              <div className="text-xs opacity-75">
+              <div className="text-xs">
                 Drag & drop support
               </div>
             </div>

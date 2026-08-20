@@ -56,10 +56,10 @@ const ImagePreview = ({
           disabled={isProcessing && !analysisReady}
           className={`flex-1 py-4 px-6 rounded-xl font-bold transition-all transform text-base ${
             analysisReady
-              ? "bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white shadow-xl hover:scale-105 animate-pulse active:scale-95"
+              ? "bg-gradient-to-r from-green-700 to-green-800 hover:from-green-800 hover:to-green-900 text-white shadow-xl hover:scale-105 animate-pulse active:scale-95"
               : isProcessing
               ? "bg-gray-400 text-gray-200 cursor-not-allowed opacity-75"
-              : "bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white shadow-lg hover:scale-105 active:scale-95"
+              : "bg-gradient-to-r from-green-700 to-green-800 hover:from-green-800 hover:to-green-900 text-white shadow-lg hover:scale-105 active:scale-95"
           } cursor-pointer`}
         >
           {isProcessing && !analysisReady

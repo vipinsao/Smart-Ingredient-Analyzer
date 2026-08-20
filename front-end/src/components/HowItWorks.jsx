@@ -26,10 +26,11 @@ const HowItWorks = () => {
           <div className="text-4xl sm:text-5xl mb-2">🤖</div>
           <h3 className="font-bold text-base sm:text-lg text-green-700">2. AI Analysis</h3>
           <p className="text-sm sm:text-base text-gray-600 leading-relaxed">
-            Our advanced AI reads and analyzes each ingredient for health impact
+            Each ingredient is looked up in the Open Food Facts taxonomies, and
+            every verdict cites the passage it came from
           </p>
-          <div className="text-xs text-green-600 bg-green-50 rounded-lg px-2 py-1">
-            Powered by Gemini AI
+          <div className="text-xs text-green-700 bg-green-50 rounded-lg px-2 py-1">
+            Tesseract OCR · Open Food Facts · a model on Groq
           </div>
         </div>
         
