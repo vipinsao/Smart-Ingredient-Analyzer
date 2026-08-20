@@ -33,6 +33,12 @@ network, about 35 seconds.
 
 ## Pipeline
 
+[ARCHITECTURE.md](./ARCHITECTURE.md) is the system-architecture document: the
+ladder of refusals this pipeline is really made of, trust boundaries, what the
+data is when there is no database, module boundaries, the OCR pool's
+concurrency and lifecycle, and what happens when each dependency is down. The
+flowchart below is the route through it.
+
 ```mermaid
 flowchart TD
     A["Camera or upload<br/>front-end/src/components/"]
