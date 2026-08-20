@@ -158,8 +158,30 @@ Expected JSON format:
     );
   }
 
-  /** One HTTP call to Groq. Returns the assistant message content. */
+  /**
+   * One HTTP call to Groq. Returns the assistant message content.
+   *
+   * Kept as the narrow contract every caller already uses. The token counts
+   * live on `requestCompletionDetailed` below rather than here, so that adding
+   * accounting did not change the shape of the value the request path passes
+   * into `analyzeGrounded`.
+   */
   async requestCompletion(prompt, maxTokens, timeoutMs) {
+    const { content } = await this.requestCompletionDetailed(prompt, maxTokens, timeoutMs);
+    return content;
+  }
+
+  /**
+   * The same call, with what it cost.
+   *
+   * @returns {Promise<{content: string, usage: object|null, latencyMs: number}>}
+   *          `usage` is the provider's own token count, or null when the
+   *          endpoint did not report one - scripts/stub-llm.js does not. It is
+   *          passed through unmodified and never estimated from the character
+   *          count, because an estimate that looks like a measurement is worse
+   *          than an absent number.
+   */
+  async requestCompletionDetailed(prompt, maxTokens, timeoutMs) {
     // Checked here rather than at boot. Everything upstream of this line - OCR,
     // the corpus, retrieval, abstention - needs no key and now runs without
     // one, so a missing key costs the verdicts and nothing else.
@@ -173,6 +195,8 @@ Expected JSON format:
         }
       );
     }
+
+    const startedAt = performance.now();
 
     let response;
     try {
@@ -233,7 +257,11 @@ Expected JSON format:
       });
     }
 
-    return content;
+    return {
+      content,
+      usage: data?.usage ?? null,
+      latencyMs: Math.round(performance.now() - startedAt),
+    };
   }
 }
 

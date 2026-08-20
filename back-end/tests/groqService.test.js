@@ -73,3 +73,58 @@ test("analyze keeps the good rows when the model returns a partly malformed arra
     [["Water", "Good"], ["Sugar", "Neutral"]]
   );
 });
+
+test("requestCompletionDetailed reports the provider's own token counts, and requestCompletion still returns only the content", async () => {
+  // Against a real socket rather than a stubbed fetch, because the thing being
+  // checked is that the `usage` block survives the HTTP round trip untouched -
+  // a stub that returns the object directly would prove nothing about parsing.
+  const { createServer } = await import("node:http");
+  const body = {
+    choices: [{ message: { content: '[{"ingredient":"water","status":"Good","reason":"","concerns":[]}]' } }],
+    usage: { prompt_tokens: 1862, completion_tokens: 97, total_tokens: 1959 },
+  };
+
+  const server = createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(body));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+  try {
+    const service = new GroqService();
+    service.baseUrl = `http://127.0.0.1:${server.address().port}/v1/chat/completions`;
+    service.apiKey = "test-key";
+
+    const detailed = await service.requestCompletionDetailed("prompt", 500, 5000);
+    assert.deepEqual(detailed.usage, body.usage);
+    assert.equal(detailed.content, body.choices[0].message.content);
+    assert.equal(typeof detailed.latencyMs, "number");
+
+    const content = await service.requestCompletion("prompt", 500, 5000);
+    assert.equal(content, body.choices[0].message.content);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("usage is null, not estimated, when the endpoint does not report it", async () => {
+  // scripts/stub-llm.js is exactly this case. A token count guessed from the
+  // character count would read as a measurement in the eval output.
+  const { createServer } = await import("node:http");
+  const server = createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ choices: [{ message: { content: "[]" } }] }));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+  try {
+    const service = new GroqService();
+    service.baseUrl = `http://127.0.0.1:${server.address().port}/v1/chat/completions`;
+    service.apiKey = "test-key";
+
+    const detailed = await service.requestCompletionDetailed("prompt", 500, 5000);
+    assert.equal(detailed.usage, null);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
