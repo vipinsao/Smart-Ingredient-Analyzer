@@ -10,6 +10,7 @@
     "ocr:benchmark": "node scripts/ocr-benchmark.js",
     "smoke": "node scripts/smoke-analyze.js",
     "eval": "node rag/eval/run-eval.js",
+    "eval:generation": "node rag/eval/run-generation-eval.js",
     "ingest": "node rag/ingest.js",
     "profile": "node scripts/profile-analyze.js",
     "loadtest": "node scripts/loadtest.js",

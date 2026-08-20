@@ -120,6 +120,15 @@ Return a JSON array shaped like:
 [{"ingredient":"sodium benzoate","status":"Bad","reason":"EFSA assessed overexposure risk as high","concerns":["overexposure"],"citations":["C1"]}]`;
 }
 
+/**
+ * The retry prompt, exported so the evaluation harness asks for a repair in
+ * exactly the words the request path uses. A harness that re-words the retry
+ * is measuring a prompt this application never sends.
+ */
+export function buildRetryPrompt(basePrompt, failure) {
+  return `${basePrompt}\n\nYour previous answer was rejected: ${failure}. Cite only ids listed above, and omit any ingredient you cannot cite.`;
+}
+
 function parseJsonArray(text, extractJsonArray) {
   const parsed = extractJsonArray(text);
   if (!parsed) return null;
@@ -189,10 +198,7 @@ export async function analyzeGrounded(ingredientNames, { retriever, complete, ex
   // 2. Generate, validate, and retry once. The retry names the specific
   //    citations that did not resolve rather than repeating the rules.
   for (const attempt of [1, 2]) {
-    const prompt =
-      attempt === 1
-        ? basePrompt
-        : `${basePrompt}\n\nYour previous answer was rejected: ${lastFailure}. Cite only ids listed above, and omit any ingredient you cannot cite.`;
+    const prompt = attempt === 1 ? basePrompt : buildRetryPrompt(basePrompt, lastFailure);
 
     const startedModel = performance.now();
     const completion = await complete(prompt);
@@ -264,4 +270,4 @@ export async function analyzeGrounded(ingredientNames, { retriever, complete, ex
   });
 }
 
-export default { analyzeGrounded, buildContextBlock, validateCitations, attachSources, buildPrompt };
+export default { analyzeGrounded, buildContextBlock, validateCitations, attachSources, buildPrompt, buildRetryPrompt };

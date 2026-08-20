@@ -1,2 +1,8 @@
 /node_modules
 /.env
+
+# The generation evaluation's output. Deliberately NOT committed, unlike
+# rag/eval/results.json: it can only be produced with a provider key, and a
+# committed copy would be indistinguishable from one produced against
+# scripts/stub-llm.js. Run `npm run eval:generation` and read your own.
+/rag/eval/generation-results.json

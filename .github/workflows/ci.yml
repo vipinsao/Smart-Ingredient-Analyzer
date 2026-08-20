@@ -58,6 +58,14 @@ jobs:
       # happens before the model is called.
       - run: npm run eval
 
+      # Runs only if a key is configured, and SKIPS CLEANLY - exit 0 with a
+      # message - when it is not. There is no key on this repository, so what
+      # this step proves today is the skip path itself: an optional measurement
+      # must never turn a build red for want of a secret.
+      - run: npm run eval:generation
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
