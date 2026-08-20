@@ -23,6 +23,7 @@
 import Tesseract from "tesseract.js";
 import AppError from "../utils/AppError.js";
 import logger from "../utils/logger.js";
+import { ocrRejections } from "../telemetry.js";
 
 /**
  * Recognition parameters. Unchanged from the per-request call this replaces -
@@ -179,6 +180,10 @@ function acquire(current) {
   }
 
   if (current.queued >= current.maxQueue) {
+    // The number that says the queue bound is doing something. It is invisible
+    // in a latency histogram, because a refusal is the fastest response the
+    // service produces.
+    ocrRejections.add(1, { reason: "queue_full" });
     return Promise.reject(
       new AppError("The analyzer is busy. Please try again in a moment.", {
         code: "OCR_BUSY",
@@ -262,6 +267,7 @@ function withDeadline(current, job) {
 
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
+      ocrRejections.add(1, { reason: "timeout" });
       poisonPool(current, `a recognition exceeded ${current.jobTimeoutMs}ms`);
       reject(
         new AppError("That image took too long to read. Try a smaller or simpler photo.", {
@@ -298,6 +304,7 @@ function poisonPool(current, reason) {
 
   const waiting = current.waiting.splice(0, current.waiting.length);
   current.queued = 0;
+  if (waiting.length > 0) ocrRejections.add(waiting.length, { reason: "pool_restart" });
   for (const wake of waiting) wake.reject(new AppError("The analyzer is restarting. Please try again.", {
     code: "OCR_BUSY",
     statusCode: 503,

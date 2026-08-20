@@ -17,7 +17,8 @@
     "bench:ocr": "node scripts/bench-ocr-worker.js",
     "bench:preprocess": "node scripts/bench-preprocess.js",
     "stub-llm": "node scripts/stub-llm.js",
-    "bench:bounds": "node scripts/bench-image-bounds.js"
+    "bench:bounds": "node scripts/bench-image-bounds.js",
+    "bench:telemetry": "node scripts/bench-telemetry.js"
   },
   "keywords": [],
   "author": "",
@@ -25,6 +26,13 @@
   "description": "Express API that OCRs a food label and returns a schema-validated ingredient analysis.",
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-metrics-otlp-http": "^0.221.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.221.0",
+    "@opentelemetry/resources": "^2.10.0",
+    "@opentelemetry/sdk-metrics": "^2.10.0",
+    "@opentelemetry/sdk-trace-node": "^2.10.0",
+    "@opentelemetry/semantic-conventions": "^1.43.0",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "express": "^4.21.2",

@@ -16,6 +16,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Bm25Index, reciprocalRankFusion } from "./bm25.js";
 import { embedOne, EMBEDDING_DIMENSIONS } from "./embedder.js";
+import { withSpan, retrievalDuration } from "../telemetry.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const corpusDir = path.join(here, "corpus");
@@ -118,9 +119,20 @@ export class Retriever {
    *        application always uses hybrid at the configured weight.
    */
   async retrieve(query, { topK = 5, candidates = 20, mode = "hybrid", denseWeight = DENSE_FUSION_WEIGHT } = {}) {
+    return withSpan("rag.retrieve", { "rag.mode": mode, "rag.top_k": topK }, (span) =>
+      this.#retrieve(query, { topK, candidates, mode, denseWeight }, span)
+    );
+  }
+
+  async #retrieve(query, { topK, candidates, mode, denseWeight }, span) {
     const started = performance.now();
 
-    const queryVector = mode === "lexical" ? null : await embedOne(query);
+    // Embedding is its own span because it is the only part of retrieval that
+    // is a neural network: it is ~95% of a warm hybrid query (measured, see
+    // npm run eval) while the brute-force scan over 839 chunks is the part
+    // everyone assumes is slow.
+    const queryVector =
+      mode === "lexical" ? null : await withSpan("rag.embed", { "rag.chars": query.length }, () => embedOne(query));
     const dense = queryVector ? this.denseSearch(queryVector, candidates) : [];
     const lexical = mode === "dense" ? [] : this.lexicalSearch(query, candidates);
 
@@ -139,17 +151,23 @@ export class Retriever {
 
     const topCosine = dense.length > 0 ? dense[0].score : 0;
     const topLexical = lexical.length > 0 ? lexical[0].score : 0;
+    // Abstain only when BOTH retrievers are weak. Either one being confident
+    // is enough to answer, because they fail on different query shapes:
+    // dense on exact identifiers, lexical on paraphrase.
+    const abstain = topCosine < ABSTAIN_MIN_COSINE && topLexical < ABSTAIN_MIN_LEXICAL;
+    const latencyMs = performance.now() - started;
+
+    retrievalDuration.record(latencyMs, { "rag.mode": mode, "rag.abstained": abstain });
+    span.setAttribute("rag.abstained", abstain);
+    span.setAttribute("rag.top_cosine", Number(topCosine.toFixed(3)));
 
     return {
       query,
       mode,
       topCosine,
       topLexical,
-      // Abstain only when BOTH retrievers are weak. Either one being confident
-      // is enough to answer, because they fail on different query shapes:
-      // dense on exact identifiers, lexical on paraphrase.
-      abstain: topCosine < ABSTAIN_MIN_COSINE && topLexical < ABSTAIN_MIN_LEXICAL,
-      latencyMs: performance.now() - started,
+      abstain,
+      latencyMs,
       results: ranked.map((hit) => ({
         ...this.chunks[hit.index ?? this.indexById.get(hit.id)],
         score: hit.score,

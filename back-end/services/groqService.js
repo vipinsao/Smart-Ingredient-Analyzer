@@ -18,6 +18,7 @@ import { LLM_TIMEOUT, LLM_TOKENS } from "../configuration/constants.js";
 import { parseAnalysis } from "../schemas/analysis.js";
 import AppError from "../utils/AppError.js";
 import logger from "../utils/logger.js";
+import { withSpan, llmTokens } from "../telemetry.js";
 
 const REPAIR_INSTRUCTION = `
 Your previous answer could not be parsed as JSON.
@@ -182,6 +183,18 @@ Expected JSON format:
    *          than an absent number.
    */
   async requestCompletionDetailed(prompt, maxTokens, timeoutMs) {
+    return withSpan(
+      "llm.generate",
+      { "llm.model": this.model, "llm.max_tokens": maxTokens, "llm.prompt_chars": prompt.length },
+      (span) => this.callProvider(prompt, maxTokens, timeoutMs, span)
+    );
+  }
+
+  /**
+   * The HTTP call itself. Split out from the span wrapper above so the wrapper
+   * is one readable line and this stays the plain provider call it was.
+   */
+  async callProvider(prompt, maxTokens, timeoutMs, span) {
     // Checked here rather than at boot. Everything upstream of this line - OCR,
     // the corpus, retrieval, abstention - needs no key and now runs without
     // one, so a missing key costs the verdicts and nothing else.
@@ -257,9 +270,20 @@ Expected JSON format:
       });
     }
 
+    const usage = data?.usage ?? null;
+    if (usage) {
+      // Recorded from the provider's own count, on the one code path that has
+      // it. An `llm.tokens` metric derived from prompt.length would be a
+      // plausible-looking number nobody could bill against.
+      llmTokens.add(usage.prompt_tokens ?? 0, { "llm.model": this.model, "llm.token.kind": "prompt" });
+      llmTokens.add(usage.completion_tokens ?? 0, { "llm.model": this.model, "llm.token.kind": "completion" });
+      span?.setAttribute("llm.usage.prompt_tokens", usage.prompt_tokens ?? 0);
+      span?.setAttribute("llm.usage.completion_tokens", usage.completion_tokens ?? 0);
+    }
+
     return {
       content,
-      usage: data?.usage ?? null,
+      usage,
       latencyMs: Math.round(performance.now() - startedAt),
     };
   }

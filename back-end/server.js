@@ -30,8 +30,29 @@ import ErrorHandler from "./middleware/errorHandler.js";
 import AppError from "./utils/AppError.js";
 import logger from "./utils/logger.js";
 import stopwatch from "./utils/stopwatch.js";
+import {
+  startTelemetry,
+  telemetryState,
+  observeOcrPool,
+  startRequestSpan,
+  runInSpan,
+  withSpan,
+  requestDuration,
+  cacheLookups,
+  SpanStatusCode,
+} from "./telemetry.js";
 
 const { geminiOcrEnabled, generationEnabled } = validateEnv();
+
+// Before the first span is created, which is the first request. Exporting to
+// the console needs no backend and no account; see telemetry.js for the
+// OTEL_* variables that point it at a collector instead.
+const shutdownTelemetry = await startTelemetry();
+// Queue depth is a level, so it is sampled by the exporter rather than
+// recorded per request. Registered here rather than in telemetry.js so that
+// module does not import the OCR pool - and with it Tesseract - into every
+// process that only wanted a tracer.
+observeOcrPool(ocrPoolStats);
 
 const app = express();
 const PORT = env.PORT;
@@ -102,10 +123,53 @@ app.use(cors({ origin: allowedOrigins, credentials: true }));
 
 app.use(express.json({ limit: IMAGE_LIMITS.maxBodySize }));
 
+/**
+ * Which route a request is attributed to, as a CLOSED set.
+ *
+ * Metric attributes must not carry caller-controlled strings: `req.path` on a
+ * 404 is whatever anyone typed, and one scan of this unauthenticated API would
+ * mint a time series per probed URL until the process ran out of memory. Two
+ * real routes plus "other" is the whole vocabulary here.
+ */
+const KNOWN_ROUTES = new Set(["/health", "/api/analyze"]);
+const routeOf = (req) => (KNOWN_ROUTES.has(req.path) ? req.path : "other");
+
 app.use((req, res, next) => {
   req.startTime = Date.now();
   req.id = crypto.randomUUID();
-  next();
+
+  const route = routeOf(req);
+  const span = startRequestSpan(`${req.method} ${route}`, {
+    "http.request.method": req.method,
+    "http.route": route,
+    "request.id": req.id,
+  });
+
+  // Both ids on the response. The request id was already generated per request
+  // and went nowhere a caller could see it; the trace id is what joins a
+  // support report to the trace and to every log line the request wrote.
+  req.traceId = span.spanContext().traceId;
+  res.setHeader("x-request-id", req.id);
+  res.setHeader("x-trace-id", req.traceId);
+
+  const started = performance.now();
+  res.on("finish", () => {
+    const outcome = res.statusCode < 400 ? "ok" : res.statusCode < 500 ? "client_error" : "server_error";
+    span.setAttribute("http.response.status_code", res.statusCode);
+    if (outcome === "server_error") span.setStatus({ code: SpanStatusCode.ERROR });
+    span.end();
+    requestDuration.record(performance.now() - started, {
+      "http.request.method": req.method,
+      "http.route": route,
+      "http.response.status_code": res.statusCode,
+      outcome,
+    });
+  });
+
+  // The span becomes the active one for everything downstream, so the OCR,
+  // retrieval and generation spans written at their own call sites attach to
+  // this request without anything being threaded through by hand.
+  runInSpan(span, next);
 });
 
 // ============= ROUTES =============
@@ -141,6 +205,7 @@ app.get("/health", (req, res) => {
     // and retrieval still work and only the verdicts fail.
     generation: generationEnabled ? "configured" : "disabled (no GROQ_API_KEY)",
     warmup: { ...warmupState, ocrPool: ocrPoolStats() },
+    telemetry: telemetryState(),
     corpus,
   });
 });
@@ -149,32 +214,53 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
   try {
     const timer = stopwatch();
 
-    const bodyValidation = Validators.validateRequestBody(req);
-    if (!bodyValidation.valid) return res.status(400).json(bodyValidation);
+    // One span for the whole admission check. It is under two milliseconds on
+    // a legitimate request, so it is here for what it says rather than for
+    // what it costs: a refused upload never reaches OCR, and without this the
+    // trace of a 413 is a bare server span with no explanation in it.
+    const validated = await withSpan("analyze.validate", {}, async (span) => {
+      const reject = (code, statusCode, body) => {
+        span.setAttribute("validation.rejected", code ?? "invalid");
+        return { rejected: { statusCode, body } };
+      };
 
-    const { image, fastMode = true, isMobile = false } = req.body;
+      const bodyValidation = Validators.validateRequestBody(req);
+      if (!bodyValidation.valid) return reject(bodyValidation.code, 400, bodyValidation);
 
-    const imageValidation = Validators.validateImage(image);
-    if (!imageValidation.valid) return res.status(400).json(imageValidation);
+      const { image, fastMode = true, isMobile = false } = req.body;
 
-    const base64Data = image.includes(",") ? image.split(",")[1] : image;
+      const imageValidation = Validators.validateImage(image);
+      if (!imageValidation.valid) return reject(imageValidation.code, 400, imageValidation);
 
-    const base64Validation = Validators.validateBase64(base64Data);
-    if (!base64Validation.valid) return res.status(400).json(base64Validation);
+      const base64Data = image.includes(",") ? image.split(",")[1] : image;
 
-    const imageBuffer = Buffer.from(base64Data, "base64");
+      const base64Validation = Validators.validateBase64(base64Data);
+      if (!base64Validation.valid) return reject(base64Validation.code, 400, base64Validation);
 
-    const bufferValidation = Validators.validateImageBuffer(imageBuffer);
-    if (!bufferValidation.valid) {
-      return res.status(bufferValidation.statusCode || 400).json(bufferValidation);
+      const imageBuffer = Buffer.from(base64Data, "base64");
+
+      const bufferValidation = Validators.validateImageBuffer(imageBuffer);
+      if (!bufferValidation.valid) {
+        return reject(bufferValidation.code, bufferValidation.statusCode || 400, bufferValidation);
+      }
+
+      span.setAttribute("image.bytes", imageBuffer.length);
+      span.setAttribute("image.format", bufferValidation.format);
+      return { imageBuffer, format: bufferValidation.format, fastMode, isMobile };
+    });
+
+    if (validated.rejected) {
+      return res.status(validated.rejected.statusCode).json(validated.rejected.body);
     }
+
+    const { imageBuffer, format, fastMode, isMobile } = validated;
 
     timer.mark("decode");
 
     logger.info("analyze request received", {
       requestId: req.id,
       bytes: imageBuffer.length,
-      format: bufferValidation.format,
+      format,
       isMobile,
       fastMode,
     });
@@ -184,6 +270,7 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
     const imageKey = cacheManager.generateImageKey(imageBuffer);
     const cachedByImage = cacheManager.get(imageKey);
     if (cachedByImage) {
+      cacheLookups.add(1, { result: "hit", key: "image" });
       timer.mark("cacheLookup");
       const timings = timer.report();
       logger.info("cache hit", { requestId: req.id, on: "image", timings });
@@ -226,6 +313,7 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
     const textKey = cacheManager.generateKey(ingredientsText);
     const cachedByText = cacheManager.get(textKey);
     if (cachedByText) {
+      cacheLookups.add(1, { result: "hit", key: "text" });
       const timings = timer.report();
       logger.info("cache hit", { requestId: req.id, on: "text", timings });
       cacheManager.set(imageKey, cachedByText);
@@ -237,6 +325,11 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
         timings,
       });
     }
+
+    // Two counters rather than one hit-rate gauge: a ratio cannot be
+    // re-windowed or summed across instances, and it is one division away at
+    // query time.
+    cacheLookups.add(1, { result: "miss" });
 
     const analysisResult = await analyzeIngredients(ingredientsText, { isMobile, fastMode });
     timer.mark("analyse");
@@ -340,6 +433,11 @@ async function shutdown(signal) {
     logger.warn("shutdown error", { reason: error?.message });
   }
 
+  // Flushes whatever the batch processor is still holding. Without it the last
+  // spans before a deploy - which are disproportionately the interesting ones -
+  // are dropped.
+  await shutdownTelemetry();
+
   cacheManager.close();
   process.exit(0);
 }
@@ -388,6 +486,7 @@ app.listen(PORT, () => {
     model: env.GROQ_MODEL,
     geminiOcr: geminiOcrEnabled,
     generation: generationEnabled,
+    telemetry: telemetryState(),
   });
   warmUp();
 });

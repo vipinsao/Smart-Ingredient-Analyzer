@@ -10,6 +10,7 @@ import { prepareForVision, preprocessForOcr } from "./services/imagePreprocessor
 import { recognize } from "./services/ocrPool.js";
 import AppError from "./utils/AppError.js";
 import logger from "./utils/logger.js";
+import { withSpan } from "./telemetry.js";
 
 const INGREDIENT_KEYWORDS = [
   "ingredients", "contains", "water", "sugar", "jaggery", "tomato", "paste",
@@ -268,9 +269,13 @@ export async function performSmartOCR(imageBuffer, { isMobile = false } = {}) {
   if (process.env.GEMINI_API_KEY) {
     const startedPreprocess = performance.now();
     try {
-      const visionImage = await prepareForVision(imageBuffer, { isMobile });
+      const visionImage = await withSpan("ocr.preprocess", { "ocr.engine": "gemini_vision" }, () =>
+        prepareForVision(imageBuffer, { isMobile })
+      );
       const preprocessMs = Math.round(performance.now() - startedPreprocess);
-      const result = await performGeminiVisionOCR(visionImage);
+      const result = await withSpan("ocr.recognise", { "ocr.engine": "gemini_vision" }, () =>
+        performGeminiVisionOCR(visionImage)
+      );
       logger.info("ocr complete", {
         method: result.method,
         preprocessMs,
@@ -287,11 +292,27 @@ export async function performSmartOCR(imageBuffer, { isMobile = false } = {}) {
     }
   }
 
+  // Two spans, not one, because they are slow for unrelated reasons and only
+  // one of them is fixable: sharp downscaling on our CPU, then Tesseract
+  // reading glyphs. The measured split is roughly 500ms to 1900ms, and a trace
+  // that reported "OCR: 2.4s" would hide which half moved.
   const startedPreprocess = performance.now();
-  const ocrImage = await preprocessForOcr(imageBuffer);
+  const ocrImage = await withSpan(
+    "ocr.preprocess",
+    { "ocr.engine": "tesseract", "image.bytes": imageBuffer.length },
+    () => preprocessForOcr(imageBuffer)
+  );
   const preprocessMs = Math.round(performance.now() - startedPreprocess);
 
-  const result = await performTesseractOCR(ocrImage);
+  const result = await withSpan("ocr.recognise", { "ocr.engine": "tesseract" }, async (span) => {
+    const recognised = await performTesseractOCR(ocrImage);
+    // Queue wait is an attribute rather than a span of its own: it is time
+    // spent inside the recognise call not doing recognition, which is exactly
+    // what an attribute on that span is for.
+    span.setAttribute("ocr.queue_wait_ms", recognised.waitMs ?? 0);
+    span.setAttribute("ocr.confidence", recognised.confidence);
+    return recognised;
+  });
   logger.info("ocr complete", {
     method: result.method,
     preprocessMs,

@@ -1,5 +1,5 @@
 {
-  "measuredAt": "2026-08-20T16:19:29.093Z",
+  "measuredAt": "2026-08-20T16:45:12.620Z",
   "corpus": {
     "model": "Xenova/all-MiniLM-L6-v2",
     "dimensions": 384,
@@ -128,9 +128,9 @@
     }
   },
   "latencyMs": {
-    "p50": 6.808001999999988,
-    "p95": 10.439910000000054,
-    "max": 12.700937999999951,
+    "p50": 14.17048399999976,
+    "p95": 28.666879000000336,
+    "max": 48.12509799999998,
     "measuredOn": "Intel(R) Core(TM) i5-9300H CPU @ 2.40GHz, 8 cores, v24.16.0",
     "note": "wall clock on one machine over 40 warm queries; machine- and load-dependent, do not quote"
   },
