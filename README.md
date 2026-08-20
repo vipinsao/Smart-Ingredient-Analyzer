@@ -5,14 +5,21 @@ Food Facts taxonomies say about each ingredient, and returns a verdict per
 ingredient **that cites the passage it came from** — or reports that no
 authoritative source covers that ingredient, rather than inventing one.
 
-**Live demo:** https://smart-ingredient-analyzer.vercel.app
-(frontend on Vercel, API on a Render free instance)
+**There is no live demo link here on purpose.** The deployment that used to be
+linked runs the pre-retrieval build: its `/health` returns two fields where the
+current code returns six, and it answers whole foods with bare Good/Bad/Neutral
+verdicts and no citations, no `uncovered` list and no abstention. It
+demonstrates the version this README argues against. The link goes back when
+the deployment is rebuilt from `master`.
+
+Run it locally instead — it takes about two minutes and needs no account of any
+kind. See [Setup](#setup).
 
 ![Upload screen](./upload.png)
 
 ![Analysis result](./dashboard.png)
 
-> The screenshots above show the pre-retrieval version of the results view.
+> The screenshots above also show the pre-retrieval version of the results view.
 
 ---
 
@@ -96,12 +103,20 @@ Two retrievers, fused with weighted Reciprocal Rank Fusion:
 - **Dense** cosine over MiniLM embeddings. Wins when the query shares no words
   with the passage.
 
-No vector database. At 839 chunks × 384 dimensions a brute-force scan is about
-322k multiply-adds, and hybrid retrieval measures at **p50 5.0ms, p95 9.5ms**
-per query including the query embedding. A vector index would add an
-operational dependency and a network hop to save nothing. It is a linear scan,
-so this stops being the right answer somewhere in the low hundreds of thousands
-of chunks. `back-end/rag/retriever.js`
+No vector database. The argument is a size argument, not a stopwatch one: at
+839 chunks × 384 dimensions a query is about **322k multiply-adds**, which is
+smaller than the JSON parsing around it and orders of magnitude below the model
+call it feeds. A vector index would add an operational dependency and a network
+hop to save something that is already too small to find.
+
+`npm run eval` prints p50/p95/max for whatever machine it runs on, and prints
+the machine with them. Those figures are deliberately not quoted here: they are
+wall clock over 40 warm queries and they move by 3× between a laptop and a
+loaded CI box, so any fixed number in this file would be precision the method
+cannot support. The multiply-add count does not move.
+
+It is a linear scan, so this stops being the right answer somewhere in the low
+hundreds of thousands of chunks. `back-end/rag/retriever.js`
 
 ---
 
@@ -130,11 +145,21 @@ this table: the corpus is short entity-shaped passages whose titles contain the
 query terms almost verbatim, which is the situation lexical search was built
 for.
 
-Dense retrieval is kept because it does contribute at rank 1 on two queries
-BM25 puts lower (`ascorbic acid`, `what does an antioxidant do in food`), and
-because the questions here are ones I wrote — they under-represent the
-paraphrase queries dense retrieval exists for. It is kept at reduced weight,
-not equal weight:
+Dense retrieval is kept because it does rank the correct passage above BM25 on
+three questions — the command prints them under *"Questions where dense
+retrieval ranks the correct passage higher than BM25"*:
+
+| question | dense | lexical | hybrid |
+| --- | --- | --- | --- |
+| `ascorbic acid` | 1 | 2 | 2 |
+| `potassium salt of sorbic acid used to stop mould` | 2 | 3 | 2 |
+| `what does an antioxidant do in food` | 1 | 3 | 1 |
+
+Read that table honestly: on `ascorbic acid` the fusion *loses* the dense win,
+because a rank-1 dense hit weighted at 0.5 does not outrank a rank-1 lexical hit
+weighted at 1.0. Dense retrieval is kept anyway, because the questions here are
+ones I wrote and they under-represent the paraphrase queries it exists for. It
+is kept at reduced weight, not equal weight:
 
 | dense weight (lexical fixed at 1.0) | recall@1 | recall@3 | recall@5 |
 | --- | --- | --- | --- |
@@ -188,11 +213,26 @@ the corpus does describe. For a tool that reads food labels, wrongly refusing a
 real additive is worse than wrongly answering a whole food, where the citation
 requirement is a second line of defence.
 
-The five it gets wrong are all food-adjacent: `sugar` retrieves the E953
-isomalt passage at cosine 0.481, `wheat flour` retrieves *flour treatment
-agent*. It answers them rather than refusing. The model is instructed to omit
-any ingredient the passages do not support, which catches some of this, but the
-retrieval-level failure is real and unfixed.
+The five it gets wrong are printed by name, with what came back instead, under
+*"Out-of-corpus questions the configured rule answers instead of refusing"*:
+
+| question | top passage | cosine | bm25 |
+| --- | --- | --- | --- |
+| `how many calories are in a medium banana` | Banana | 0.420 | 10.5 |
+| `what temperature should I proof sourdough at` | n° - no | 0.163 | 12.5 |
+| `sugar` | Sweetener | 0.481 | 7.3 |
+| `iodised salt` | Inorganic salts | 0.459 | 6.2 |
+| `wheat flour` | Flour treatment agent | 0.429 | 10.4 |
+
+They are all food-adjacent, and each one is a near miss rather than a wild one:
+`sugar` reaches the *sweetener* additive class, `wheat flour` reaches *flour
+treatment agent*. It answers them rather than refusing. The model is instructed
+to omit any ingredient the passages do not support, which catches some of this,
+but the retrieval-level failure is real and unfixed.
+
+(An earlier version of this file attributed the `sugar` miss to the E953
+isomalt passage. That was wrong — the harness now prints the passage rather than
+leaving it to be remembered, and it is the *Sweetener* class chunk.)
 
 ### Cost per label
 
@@ -202,6 +242,106 @@ Salt, Spices and Condiments, Stabilizers (INS1422, INS415), Acidity Regulators
 abstain before any token is spent. The remainder produce a prompt of **24
 context passages, 7,448 characters** (~1,860 tokens by the 4-characters-per-token
 rule of thumb — an estimate, not a provider count).
+
+### Latency, and where it goes
+
+Every figure in this section was measured on one machine — **Intel i5-9300H,
+WSL2, Node 24** — pinned to a single core with `taskset -c 0`, because the
+deployment target is a free tier with one shared CPU and an 8-core laptop
+answers a different question. The model call is stubbed
+(`back-end/scripts/stub-llm.js`), so these are the pipeline's own costs with the
+provider round trip removed; add that for a user-facing total.
+
+Before and after were run **back to back in one session**, from a git worktree
+at the pre-pool commit and then at `master`. That matters: the same unchanged
+code measured 3.8s and 7.7s on this laptop two hours apart, so any before/after
+pair taken at different times on this hardware is meaningless.
+
+```bash
+cd back-end
+taskset -c 0 node scripts/profile-analyze.js 3 5
+```
+
+Medians, warm process, one core, in milliseconds:
+
+| stage | before | after |
+| --- | --- | --- |
+| sharp pre-processing | 660 | 422 |
+| Tesseract | 3,257 | 1,502 |
+| **total, server-side** | **3,777** | **1,941** |
+
+First request after a cold boot, medians:
+
+| stage | before | after |
+| --- | --- | --- |
+| retrieval (embed + BM25) | 494 | 133 |
+| Tesseract | 2,721 | 2,136 |
+| **total, server-side** | **3,794** | **3,327** |
+| boot to a healthy `/health` | 672 | 592 |
+
+Three changes account for it: the Tesseract worker is pooled instead of being
+created and destroyed per request; the ONNX embedding session and the corpus
+are built at boot instead of inside the first user's request; and `/health` no
+longer loads the 1.3MB corpus in order to fill in three fields.
+
+**The prior diagnosis was wrong, and the measurement is how I know.** The claim
+on record was that per-request worker startup was "most of" a 21s OCR call.
+`npm run bench:ocr` puts `createWorker` at 397ms against 2,361ms of
+recognition — 14%, not most. Pooling still roughly halves the warm request,
+because in a loaded server process the per-request child-process spawn and WASM
+instantiation cost far more than they do in an isolated benchmark, but the
+dominant cost is recognition itself and it remains so.
+
+### Concurrency
+
+```bash
+cd back-end
+taskset -c 0 node scripts/loadtest.js 8 1 2 3 4 6
+```
+
+One core, pool size 1, eight requests per level, distinct image each time:
+
+| concurrency | ok | failed | p50 | p95 | req/s |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 8 | 0 | 2,214 | 2,567 | 0.46 |
+| 2 | 8 | 0 | 4,483 | 4,751 | 0.46 |
+| 3 | 8 | 0 | 7,367 | 8,734 | 0.41 |
+| 4 | 8 | 0 | 10,204 | 13,904 | 0.37 |
+| 6 | 5 | 3 × `OCR_BUSY` | 12,107 | 17,656 | 0.45 |
+
+**Throughput is flat at roughly 0.45 requests per second no matter how many
+people ask at once, and latency rises linearly with concurrency.** That is the
+correct shape for CPU-bound work on one core and it is the honest limit of this
+deployment: this app serves about one user at a time. At concurrency 6 the
+queue bound starts refusing work with a typed 503 rather than accepting
+requests it cannot finish before a browser gives up.
+
+More workers does not help, which is why the pool defaults to one. Same
+command, `OCR_POOL_SIZE` varied, p50 at concurrency 1 and the throughput range
+across levels 1–4:
+
+| pool size | p50 at concurrency 1 | req/s across 1–4 |
+| --- | --- | --- |
+| 1 | 2,214 | 0.37 – 0.46 |
+| 2 | 4,021 | 0.17 – 0.35 |
+| 3 | 8,701 | 0.12 – 0.24 |
+
+### What did not work
+
+- **Downscaling the image before OCR.** `maxWidth: 1200` saves about 950ms and
+  turns `INS1422, INS415 ... INS211` into `NS1422 ... NS211`. Those identifiers
+  are exactly what BM25 matches on, so it is not a speed-up, it is a broken
+  retriever. Reverted. `npm run bench:preprocess`
+- **Dropping `sharpen` or `normalise`.** Each saves 250–350ms of sharp time and
+  each damages the extracted text on at least one of the three test subjects.
+  Kept.
+- **`png compressionLevel: 0`.** Byte-identical OCR output and no time
+  difference this machine can resolve — the same configuration measured 2,189ms
+  and 2,663ms of recognition on different runs, so a 200ms effect is inside the
+  noise. Not changed.
+
+Nothing in `OCR_PREPROCESS` changed as a result of this work. The benchmark
+that says why is committed.
 
 ### Not measured
 
@@ -217,23 +357,38 @@ Nothing in this README claims otherwise.
 
 ## Setup
 
-Prerequisites: Node.js 20 or newer, and a free Groq API key from
-https://console.groq.com/keys (no credit card).
+Prerequisites: Node.js 20 or newer. **No account of any kind is needed to see
+this working.**
 
 ### Back end
 
 ```bash
 cd back-end
 npm ci
-cp .env.example .env      # then set GROQ_API_KEY
 npm start                 # http://localhost:5000
 ```
 
-`curl http://localhost:5000/health` reports the OCR engines, the model, and the
-loaded corpus.
+That is the whole thing. OCR, the corpus, hybrid retrieval, abstention, the
+citation check, the allergen table and the health score all run with no key.
+Without `GROQ_API_KEY` the server boots, logs one warning, serves `/health`,
+and fails only the generation call, with a typed 503 that names what is
+missing.
 
-The first analysis downloads the embedding model (~87MB) into `back-end/.models`.
-After that everything runs locally.
+`curl http://localhost:5000/health` reports the OCR engines, whether generation
+is configured, the warm-up state and the corpus.
+
+For the ingredient verdicts as well, add a free Groq key (no credit card) from
+https://console.groq.com/keys:
+
+```bash
+cp .env.example .env      # then set GROQ_API_KEY
+```
+
+**The first command that needs embeddings downloads the model (~87MB) into
+`back-end/.models`** — that is `npm run eval`, `npm run ingest`, or starting the
+server, whichever you run first. It prints a line before it starts, because
+otherwise it is a multi-minute silent stall on a slow connection. After that
+everything runs locally and offline.
 
 ### Front end
 
@@ -262,8 +417,12 @@ Frontend on http://localhost:8080, API on http://localhost:5000.
 
 | Variable | Where | Required | Purpose |
 | --- | --- | --- | --- |
-| `GROQ_API_KEY` | back-end | yes | Generation. Free tier, no card. |
+| `GROQ_API_KEY` | back-end | no | Ingredient verdicts. Free tier, no card. Without it everything except generation still runs. |
 | `GROQ_MODEL` | back-end | no | Defaults to `openai/gpt-oss-120b`. |
+| `GROQ_BASE_URL` | back-end | no | Chat-completions endpoint. Only for pointing at `scripts/stub-llm.js` when profiling. |
+| `OCR_POOL_SIZE` | back-end | no | Tesseract workers. Defaults to 1; see the sweep in `services/ocrPool.js`. |
+| `OCR_MAX_QUEUE` | back-end | no | Requests allowed to wait for a worker before new ones get a 503. Defaults to 4. |
+| `RATE_LIMIT_MAX` / `ANALYZE_RATE_LIMIT_MAX` | back-end | no | Per-IP budgets per 15 min. Default 100 / 20. Raised only by the load test. |
 | `GEMINI_API_KEY` | back-end | no | Enables Gemini Vision OCR ahead of Tesseract. |
 | `PORT` | back-end | no | Defaults to 5000. |
 | `NODE_ENV` | back-end | no | Selects the CORS origin list and error verbosity. |
@@ -276,11 +435,17 @@ Frontend on http://localhost:8080, API on http://localhost:5000.
 
 ```bash
 cd back-end
-npm test              # 63 unit tests, no API key, no model download
+npm test              # 74 tests, no API key, no network
 npm run eval          # retrieval evaluation + ablation, reproduces every table above
 npm run ingest        # rebuild the corpus from the live taxonomies
 npm run ocr:benchmark # OCR with and without pre-processing, side by side
 npm run smoke         # post the sample label to a running API
+
+# performance, all against a local stub model endpoint - no key, no network
+npm run profile       # per-stage breakdown of the request path
+npm run loadtest      # throughput and p50/p95 at rising concurrency
+npm run bench:ocr     # Tesseract worker startup vs recognition
+npm run bench:preprocess  # what each pre-processing setting costs and buys
 
 cd ../front-end
 npm run lint && npm run build
@@ -329,7 +494,8 @@ argued in [DECISIONS.md](./DECISIONS.md).
   ingredients will return mostly `uncovered`. That is correct behaviour, and it
   will look empty.
 - **Retrieval precision on generic ingredient words is imperfect** — measured
-  above: `sugar` retrieves an isomalt passage rather than abstaining.
+  above: `sugar` reaches the *Sweetener* additive-class passage rather than
+  abstaining, and four others like it.
 - **The allergen check is a keyword match**, not a guarantee. It matches a fixed
   list (`ALLERGENS` in `back-end/configuration/constants.js`) on word
   boundaries, and reports which keyword produced each flag. It will miss an
@@ -338,12 +504,23 @@ argued in [DECISIONS.md](./DECISIONS.md).
   serious allergy must read the label.
 - **OCR quality sets the ceiling.** The extracted text is returned in
   `ingredientsText` so you can see what the model was actually given.
-- **It is slow on the free hosting tier.** Measured against the deployed API on
-  2026-08-20 (before the retrieval work): a cold Render instance took 22.5s to
-  answer `/health`, and a warm end-to-end analysis took 25.5s, almost all of it
-  Tesseract. The same OCR takes 2–5s on a laptop. The browser waits 60s.
-- **Tesseract runs per request**, spinning up a worker each time. A pooled
-  worker is the single biggest latency win available and is not implemented.
+- **It serves about one user at a time.** Measured, not estimated: on a single
+  core, throughput is flat at roughly 0.45 requests per second regardless of
+  concurrency, and p50 goes from 2.2s at concurrency 1 to 10.2s at concurrency
+  4. See [Concurrency](#concurrency). Past a queue depth of four the API
+  refuses new work with a 503 rather than accepting requests it cannot finish.
+- **Roughly a second and a half of every request is Tesseract, and that is the
+  floor.** Pooling the worker and warming the model at boot roughly halved a
+  warm request; what is left is recognition itself. The only lever that would
+  move it further is feeding Tesseract fewer pixels, and
+  [that was measured and rejected](#what-did-not-work) because it destroys the
+  additive codes retrieval depends on. Faster than this means a different OCR
+  engine, or doing OCR in the browser.
+- **These are laptop numbers, not Render numbers.** The free-tier deployment
+  could not be re-measured, because it runs the pre-retrieval build and this
+  work was not deployed. The earlier README figures for it (22.5s cold, 25.5s
+  warm) were measured against that older build and are not comparable to
+  anything in the section above.
 - **The result cache is in-process.** Lost on restart, not shared between
   instances.
 - **English only.** Only `eng.traineddata` is bundled.

@@ -82,10 +82,16 @@ almost all of the work**, and I can show the table that says so.
 ## Why no vector database
 
 839 chunks at 384 dimensions. A brute-force cosine scan is about 322,000
-multiply-adds, and the whole hybrid retrieval measures at p50 5ms including the
-query embedding. pgvector on a free Supabase tier would work, and would add an
-account, a network round trip, a connection pool and a migration to save no
-measurable time.
+multiply-adds per query - smaller than the JSON parsing around it, and orders of
+magnitude below the model call it feeds. pgvector on a free Supabase tier would
+work, and would add an account, a network round trip, a connection pool and a
+migration to save something too small to measure reliably.
+
+Deliberately no millisecond figure here. `npm run eval` prints p50/p95/max
+alongside the machine that produced them, and the spread across machines is
+about 3x - a fixed number in a document would be a claim the measurement cannot
+support, and it would be the one number in this repo that does not reproduce.
+The multiply-add count reproduces everywhere.
 
 The scan is linear, so this is a decision with a stated expiry: somewhere in
 the low hundreds of thousands of chunks the constant factors stop hiding it and
