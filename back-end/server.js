@@ -19,7 +19,8 @@ import {
 } from "./configuration/constants.js";
 
 import ocrService from "./services/ocrService.js";
-import groqService from "./services/groqService.js";
+import { getRetriever } from "./rag/retriever.js";
+import { analyzeIngredients } from "./services/analysisService.js";
 import cacheManager from "./utils/cache.js";
 import Validators from "./utils/validators.js";
 import AnalysisHelpers from "./utils/helpers.js";
@@ -90,11 +91,20 @@ app.use((req, res, next) => {
 // ============= ROUTES =============
 
 app.get("/health", (req, res) => {
+  let corpus = null;
+  try {
+    const { meta } = getRetriever();
+    corpus = { chunks: meta.chunks, model: meta.model, builtAt: meta.builtAt };
+  } catch (error) {
+    corpus = { error: error.message };
+  }
+
   res.json({
     status: "OK",
     timestamp: new Date().toISOString(),
     ocr: geminiOcrEnabled ? "gemini-vision + tesseract" : "tesseract",
     model: env.GROQ_MODEL,
+    corpus,
   });
 });
 
@@ -164,18 +174,28 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
       return res.json({ ...cachedByText, cached: true, cacheHit: "text" });
     }
 
-    const groqResult = await groqService.analyze(ingredientsText, { isMobile, fastMode });
+    const analysisResult = await analyzeIngredients(ingredientsText, { isMobile, fastMode });
 
     // Allergens and the health score are computed here, not asked of the
     // model: same label in, same flags out, every time.
     const { allergens, details: allergenDetails } =
       AnalysisHelpers.detectAllergenDetails(ingredientsText);
-    const healthScore = AnalysisHelpers.calculateHealthScore(groqResult.analysis);
-    const harmfulIngredients = AnalysisHelpers.detectHarmfulIngredients(groqResult.analysis);
+    const healthScore = AnalysisHelpers.calculateHealthScore(analysisResult.analysis);
+    const harmfulIngredients = AnalysisHelpers.detectHarmfulIngredients(analysisResult.analysis);
 
     const result = {
       ingredientsText,
-      analysis: groqResult.analysis,
+      analysis: analysisResult.analysis,
+      // Ingredients the corpus does not cover are reported, not guessed at.
+      uncovered: analysisResult.uncovered,
+      grounded: analysisResult.grounded,
+      degradedReason: analysisResult.degradedReason,
+      sourcesConsulted: analysisResult.contextChunks,
+      coverage: {
+        parsed: analysisResult.ingredientsParsed.length,
+        analysed: analysisResult.analysis.length,
+        uncovered: analysisResult.uncovered.length,
+      },
       healthScore,
       allergens,
       allergenDetails,
@@ -183,9 +203,9 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
       ocrConfidence: ocrResult.confidence,
       ocrMethod: ocrResult.method,
       processingTime: Date.now() - startTime,
-      aiTime: groqResult.aiTime,
-      llmAttempts: groqResult.attempts,
-      droppedRows: groqResult.droppedRows,
+      aiTime: analysisResult.aiTime,
+      llmAttempts: analysisResult.attempts,
+      droppedRows: analysisResult.droppedRows,
       fastMode,
       isMobile,
       cached: false,
@@ -200,7 +220,9 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
       ocrMs: ocrResult.processingTime,
       aiMs: groqResult.aiTime,
       ocrMethod: ocrResult.method,
-      ingredients: groqResult.analysis.length,
+      grounded: analysisResult.grounded,
+      ingredients: analysisResult.analysis.length,
+      uncovered: analysisResult.uncovered.length,
       allergens,
     });
 

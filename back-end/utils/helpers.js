@@ -99,6 +99,92 @@ export class AnalysisHelpers {
   }
 
   /**
+   * Split an ingredient list into individual ingredients.
+   *
+   * A label reads "Stabilizers (INS1422, INS415)". Both the function word and
+   * the two additive codes matter, and the codes are what the corpus can
+   * actually be queried with, so a parenthesised group emits the outer name
+   * AND each item inside it.
+   *
+   * Splitting happens at bracket depth zero only, so "Acidity Regulators
+   * (INS260, INS334)" is not torn apart at the wrong comma.
+   */
+  static parseIngredientList(text, { limit = 25 } = {}) {
+    if (typeof text !== "string" || text.trim() === "") return [];
+
+    const cleaned = text
+      .replace(/^\s*(ingredients?|contains?|composition)\s*:?\s*/i, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const topLevel = [];
+    let buffer = "";
+    let depth = 0;
+
+    for (const character of cleaned) {
+      if (character === "(") depth += 1;
+      if (character === ")") depth = Math.max(0, depth - 1);
+
+      if (depth === 0 && (character === "," || character === ";" || character === ".")) {
+        topLevel.push(buffer);
+        buffer = "";
+        continue;
+      }
+      buffer += character;
+    }
+    topLevel.push(buffer);
+
+    const names = [];
+
+    for (const rawItem of topLevel) {
+      // "X and Y" at the top level is two ingredients, but "Spices and
+      // Condiments" is one phrase - only split when both sides look like
+      // substantial names.
+      const parts = rawItem.split(/\s+and\s+(?=[A-Za-z][\w\s]*\()/i);
+
+      for (const part of parts) {
+        const withoutGroup = part.replace(/\(([^)]*)\)/g, (match, inner) => {
+          for (const nested of inner.split(/[,;]/)) {
+            const name = AnalysisHelpers.cleanIngredientName(nested);
+            if (name) names.push(name);
+          }
+          return " ";
+        });
+
+        const outer = AnalysisHelpers.cleanIngredientName(withoutGroup);
+        if (outer) names.push(outer);
+      }
+    }
+
+    const seen = new Set();
+    const unique = [];
+    for (const name of names) {
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      unique.push(name);
+    }
+
+    return unique.slice(0, limit);
+  }
+
+  /** Trim an ingredient fragment down to a name: no percentages, no stray punctuation. */
+  static cleanIngredientName(fragment) {
+    const name = String(fragment)
+      .replace(/\d+\.?\d*\s*%/g, "")
+      .replace(/[^\w\s\-+()]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^[-\s]+|[-\s]+$/g, "");
+
+    // Two characters is below anything meaningful and is usually OCR debris.
+    if (name.length < 3) return "";
+    // A bare number is not an ingredient.
+    if (/^\d+$/.test(name)) return "";
+    return name;
+  }
+
+  /**
    * Flag allergens by matching the keyword table on word boundaries.
    *
    * @returns {{ allergens: string[], details: Array<{allergen: string, matches: string[]}> }}
