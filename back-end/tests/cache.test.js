@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CacheManager } from "../utils/cache.js";
+import { CACHE_CONFIG } from "../configuration/constants.js";
 
 test("the text key is stable and case-insensitive", () => {
   const cache = new CacheManager();
@@ -38,4 +39,27 @@ test("a stored result round-trips", () => {
   } finally {
     cache.close();
   }
+});
+
+
+// ---------------------------------------------------------------------------
+// The cache key is a content hash and the caller supplies the content: one byte
+// appended after a JPEG's EOI marker changes the hash without changing a pixel,
+// which is a trick scripts/profile-analyze.js documents and relies on. Without
+// maxKeys every distinct byte string bought a 48-hour entry.
+// ---------------------------------------------------------------------------
+
+test("the cache is bounded and evicts rather than failing when full", () => {
+  assert.equal(typeof CACHE_CONFIG.maxKeys, "number");
+
+  const manager = new CacheManager();
+  const total = CACHE_CONFIG.maxKeys + 50;
+  for (let i = 0; i < total; i += 1) manager.set(`key-${i}`, { i });
+
+  assert.equal(manager.getStats().keys, CACHE_CONFIG.maxKeys, "cache must not grow past its bound");
+  // The newest write survived - a full cache must not start refusing work.
+  assert.deepEqual(manager.get(`key-${total - 1}`), { i: total - 1 });
+  // The oldest was evicted, which is the half that keeps memory flat.
+  assert.equal(manager.get("key-0"), undefined);
+  manager.close();
 });

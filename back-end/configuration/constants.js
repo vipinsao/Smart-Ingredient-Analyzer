@@ -40,6 +40,13 @@ export const ALLERGENS = {
 export const CACHE_CONFIG = {
   stdTTL: 172800, // 48 hours
   checkperiod: 3600, // 1 hour
+  // Bounded, because the key is a content hash and the caller chooses the
+  // content. Appending one byte after a JPEG's EOI marker changes the sha256
+  // without changing a pixel - scripts/profile-analyze.js relies on exactly
+  // that trick - so an unbounded cache is an unbounded allocation with a
+  // 48-hour TTL holding every entry. At roughly 20KB per stored analysis this
+  // caps the cache near 10MB, which fits the 512MB free tier with room to spare.
+  maxKeys: 500,
 };
 
 export const IMAGE_LIMITS = {

@@ -29,8 +29,25 @@ export class CacheManager {
     return this.cache.get(key);
   }
 
+  /**
+   * Store a result, evicting the oldest entry when the cache is full.
+   *
+   * node-cache enforces `maxKeys` by throwing ECACHEFULL rather than evicting,
+   * so without this a full cache would turn every subsequent analysis into a
+   * 500 - the bound would trade a memory leak for an outage. node-cache keeps
+   * its keys in insertion order, so dropping the first is FIFO eviction: not
+   * LRU, but bounded and predictable, and the TTL already means entries are
+   * disposable.
+   */
   set(key, value) {
-    this.cache.set(key, value);
+    try {
+      this.cache.set(key, value);
+    } catch (error) {
+      if (error?.errorcode !== "ECACHEFULL") throw error;
+      const [oldest] = this.cache.keys();
+      if (oldest !== undefined) this.cache.del(oldest);
+      this.cache.set(key, value);
+    }
   }
 
   has(key) {
