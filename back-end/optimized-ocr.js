@@ -1,119 +1,37 @@
-// optimized-ocr.js - WITH INGREDIENT VALIDATION
-import sharp from "sharp";
+// optimized-ocr.js - The two OCR engines and the heuristic that decides
+// whether what came back is actually an ingredient label.
+//
+// Engine order: Gemini Vision first when a key is configured (it reads
+// stylised label typography far better), Tesseract otherwise. Tesseract always
+// works and needs no key, so the app is usable with the Groq key alone.
+import Tesseract from "tesseract.js";
 import fetch from "node-fetch";
+import { GEMINI_TIMEOUT_MS } from "./configuration/constants.js";
+import { prepareForVision, preprocessForOcr } from "./services/imagePreprocessor.js";
+import AppError from "./utils/AppError.js";
+import logger from "./utils/logger.js";
 
-// Ingredient validation keywords and patterns
 const INGREDIENT_KEYWORDS = [
-  // Common ingredient words
-  "ingredients",
-  "contains",
-  "water",
-  "sugar",
-  "jaggery",
-  "tomato",
-  "paste",
-  "tamarind",
-  "salt",
-  "spices",
-  "condiments",
-  "stabilizers",
-  "acidity",
-  "regulators",
-  "preservative",
-  "ins1422",
-  "ins415",
-  "ins260",
-  "ins334",
-  "ins211",
-  "flour",
-  "oil",
-  "milk",
-  "egg",
-  "wheat",
-  "corn",
-  "rice",
-  "soy",
-  "nuts",
-  "peanut",
-  "dairy",
-  "protein",
-  "fat",
-  "sodium",
-  "vitamin",
-  "mineral",
-  "preservative",
-  "artificial",
-  "natural",
-  "flavor",
-  "coloring",
-  "extract",
-  "powder",
-  "syrup",
-  "starch",
-  "glucose",
-  "fructose",
-  "citric acid",
-  "baking",
-  "yeast",
-  "gelatin",
+  "ingredients", "contains", "water", "sugar", "jaggery", "tomato", "paste",
+  "tamarind", "salt", "spices", "condiments", "stabilizers", "acidity",
+  "regulators", "preservative", "ins1422", "ins415", "ins260", "ins334",
+  "ins211", "flour", "oil", "milk", "egg", "wheat", "corn", "rice", "soy",
+  "nuts", "peanut", "dairy", "protein", "fat", "sodium", "vitamin", "mineral",
+  "artificial", "natural", "flavor", "coloring", "extract", "powder", "syrup",
+  "starch", "glucose", "fructose", "citric acid", "baking", "yeast", "gelatin",
   "lecithin",
-
   // Units and measurements
-  "ins",
-  "e",
-  "mg",
-  "g",
-  "kg",
-  "ml",
-  "l",
-  "oz",
-  "lb",
-  "cup",
-  "tbsp",
-  "tsp",
-  "%",
-  "milligram",
-  "gram",
-  "kilogram",
-  "milliliter",
-  "liter",
-  "ounce",
-  "pound",
-
+  "ins", "mg", "kg", "ml", "oz", "lb", "cup", "tbsp", "tsp", "%", "milligram",
+  "gram", "kilogram", "milliliter", "liter", "ounce", "pound",
   // Nutritional terms
-  "calories",
-  "carbs",
-  "carbohydrate",
-  "fiber",
-  "cholesterol",
-  "trans fat",
-  "saturated",
-  "unsaturated",
-  "monounsaturated",
-  "polyunsaturated",
-
+  "calories", "carbs", "carbohydrate", "fiber", "cholesterol", "trans fat",
+  "saturated", "unsaturated", "monounsaturated", "polyunsaturated",
   // Allergen warnings
-  "allergen",
-  "allergy",
-  "warning",
-  "may contain",
-  "processed in facility",
-  "gluten",
-  "shellfish",
-  "fish",
-  "sesame",
-  "sulfite",
-
+  "allergen", "allergy", "warning", "may contain", "processed in facility",
+  "gluten", "shellfish", "fish", "sesame", "sulfite",
   // Food categories
-  "organic",
-  "non-gmo",
-  "kosher",
-  "halal",
-  "vegan",
-  "vegetarian",
-  "free range",
-  "pasteurized",
-  "homogenized",
+  "organic", "non-gmo", "kosher", "halal", "vegan", "vegetarian", "free range",
+  "pasteurized", "homogenized",
 ];
 
 const NUTRITION_PATTERNS = [
@@ -128,39 +46,47 @@ const NUTRITION_PATTERNS = [
   /\d+\s*calories/i,
 ];
 
-// Validate if extracted text contains ingredient information
-function validateIngredientText(text) {
-  if (!text || text.trim().length < 10) {
+export const MIN_INGREDIENT_SCORE = 2;
+
+/**
+ * Score OCR output on how much it looks like a food label.
+ *
+ * This is what stops a photo of a cat from being sent to the model and coming
+ * back as a confident nutritional analysis of nothing. It is a heuristic, not
+ * a classifier: it counts ingredient vocabulary, INS additive codes,
+ * percentages, nutrition patterns and list punctuation.
+ */
+export function validateIngredientText(text) {
+  if (typeof text !== "string" || text.trim().length < 10) {
     return {
       isValid: false,
       reason: "Text too short to be ingredient list",
       confidence: 0,
       score: 0,
+      foundKeywords: [],
+      foundPatterns: 0,
+      wordCount: 0,
     };
   }
 
   const lowerText = text.toLowerCase();
   let score = 0;
-  let foundKeywords = [];
-  let foundPatterns = [];
+  const foundKeywords = [];
+  const foundPatterns = [];
 
-  // Check for ingredient keywords
-  INGREDIENT_KEYWORDS.forEach((keyword) => {
-    if (lowerText.includes(keyword.toLowerCase())) {
-      score += keyword === "ingredients" ? 15 : 3; // Higher scores for better detection
+  for (const keyword of INGREDIENT_KEYWORDS) {
+    if (lowerText.includes(keyword)) {
+      score += keyword === "ingredients" ? 15 : 3;
       foundKeywords.push(keyword);
     }
-  });
+  }
 
-  // Special boost for Indian food additives (INS codes)
   const insMatches = text.match(/ins\d+/gi) || [];
-  score += insMatches.length * 5; // Higher score for INS codes
+  score += insMatches.length * 5;
 
-  // Boost for percentage indicators
   const percentageMatches = text.match(/\d+\.?\d*%/g) || [];
   score += percentageMatches.length * 3;
 
-  // Check for nutrition patterns
   NUTRITION_PATTERNS.forEach((pattern, index) => {
     if (pattern.test(text)) {
       score += 7;
@@ -168,69 +94,47 @@ function validateIngredientText(text) {
     }
   });
 
-  // Check for comma-separated lists (common in ingredient lists)
   const commaCount = (text.match(/,/g) || []).length;
-  if (commaCount >= 3) {
-    score += Math.min(commaCount * 2, 15);
-  }
+  if (commaCount >= 3) score += Math.min(commaCount * 2, 15);
 
-  // Check for parentheses (common in ingredient lists for specifications)
   const parenCount = (text.match(/\(/g) || []).length;
-  if (parenCount >= 2) {
-    score += Math.min(parenCount * 3, 12);
-  }
+  if (parenCount >= 2) score += Math.min(parenCount * 3, 12);
 
-  // Penalty for very short words (might be noise)
+  // Mostly one- and two-letter tokens is the signature of OCR noise.
   const words = text.split(/\s+/);
   const shortWords = words.filter((word) => word.length <= 2).length;
-  if (shortWords > words.length * 0.5) {
-    score -= 5; // Reduced penalty
-  }
+  if (shortWords > words.length * 0.5) score -= 5;
 
-  // Even lower minimum score for better acceptance
-  const minScore = 2;
-  const isValid = score >= minScore;
+  const isValid = score >= MIN_INGREDIENT_SCORE;
 
   return {
     isValid,
     confidence: Math.min(Math.max(score, 0), 100),
     reason: isValid
       ? `Found ${foundKeywords.length} ingredient keywords and ${foundPatterns.length} nutrition patterns`
-      : `Score too low (${score}/${minScore}). May not be an ingredient label.`,
-    foundKeywords: foundKeywords.slice(0, 5), // Limit for response size
+      : `Score too low (${score}/${MIN_INGREDIENT_SCORE}). May not be an ingredient label.`,
+    foundKeywords: foundKeywords.slice(0, 5),
     foundPatterns: foundPatterns.length,
     wordCount: words.length,
     score,
   };
 }
 
-// OPTION 1: Gemini Vision OCR with validation
+/** Gemini Vision OCR. Requires GEMINI_API_KEY; optional in this app. */
 export async function performGeminiVisionOCR(imageBuffer) {
+  if (!process.env.GEMINI_API_KEY) {
+    throw new AppError("Gemini API key not configured", {
+      code: "GEMINI_NOT_CONFIGURED",
+      statusCode: 503,
+    });
+  }
+
+  const startTime = Date.now();
+  const base64Image = imageBuffer.toString("base64");
+
+  let response;
   try {
-    const startTime = Date.now();
-
-    // Validate input
-    if (!imageBuffer || imageBuffer.length === 0) {
-      throw new Error("Invalid image buffer provided");
-    }
-
-    const base64Image = imageBuffer.toString("base64");
-
-    if (!base64Image) {
-      throw new Error("Failed to convert image to base64");
-    }
-
-    console.log(
-      `🔍 Gemini Vision: Processing ${(base64Image.length / 1024).toFixed(
-        1
-      )}KB image`
-    );
-
-    if (!process.env.GEMINI_API_KEY) {
-      throw new Error("Gemini API key not configured");
-    }
-
-    const response = await fetch(
+    response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
       {
         method: "POST",
@@ -242,256 +146,140 @@ export async function performGeminiVisionOCR(imageBuffer) {
                 {
                   text: "You are an expert at reading food labels and ingredient lists. Your task is to extract ONLY the ingredients list from this food label image. \n\nLook for sections that start with 'INGREDIENTS:', 'Contains:', 'Composition:', or similar headers. Extract the complete ingredient text exactly as written, preserving all commas, parentheses, percentages, and INS codes (like INS 262, INS 415, etc.).\n\nInclude ALL ingredients from the list, even if they seem unusual or contain numbers/codes. Do not skip any ingredients.\n\nIf you cannot find any ingredients list, respond with exactly 'NO_INGREDIENTS_FOUND'.\n\nDo not include:\n- Nutritional information\n- Allergen warnings (unless they are part of the ingredients list)\n- Manufacturing details\n- Storage instructions\n- Any other text\n\nReturn only the ingredients text, nothing else.",
                 },
-                {
-                  inline_data: {
-                    mime_type: "image/jpeg",
-                    data: base64Image,
-                  },
-                },
+                { inline_data: { mime_type: "image/jpeg", data: base64Image } },
               ],
             },
           ],
-          generationConfig: {
-            temperature: 0,
-            maxOutputTokens: 1024, // Increased for longer ingredient lists
-            candidateCount: 1,
-          },
+          generationConfig: { temperature: 0, maxOutputTokens: 1024, candidateCount: 1 },
         }),
+        // Without a deadline a stalled connection holds the request open for as
+        // long as the socket survives.
+        signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
       }
     );
-
-    const processingTime = Date.now() - startTime;
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(
-        `❌ Gemini API HTTP error: ${response.status} - ${errorText}`
-      );
-      throw new Error(`Gemini API HTTP error: ${response.status}`);
-    }
-
-    const result = await response.json();
-
-    if (result.error) {
-      console.error("❌ Gemini API error:", result.error);
-      throw new Error(
-        result.error.message ||
-          `Gemini Vision API error: ${result.error.code || "unknown"}`
-      );
-    }
-
-    const extractedText =
-      result.candidates?.[0]?.content?.parts?.[0]?.text || "";
-
-    if (!extractedText.trim()) {
-      throw new Error("No text extracted from image");
-    }
-
-    // Check if Gemini detected it's not a food label
-    const cleanText = extractedText.trim().toUpperCase();
-    if (
-      cleanText === "NO_INGREDIENTS_FOUND" ||
-      cleanText === "NOT_FOOD_LABEL" ||
-      cleanText.includes("NO INGREDIENTS")
-    ) {
-      throw new Error(
-        "Image does not appear to contain ingredient information"
-      );
-    }
-
-    // Validate the extracted text
-    const validation = validateIngredientText(extractedText);
-
-    if (!validation.isValid) {
-      console.log(
-        `⚠️ Validation failed: ${validation.reason}, score: ${validation.score}`
-      );
-      throw new Error(`Invalid ingredient image: ${validation.reason}`);
-    }
-
-    console.log(
-      `✅ Gemini Vision OCR successful: ${extractedText.length} characters extracted`
-    );
-
-    return {
-      text: extractedText.trim(),
-      confidence: Math.min(validation.confidence, 90),
-      method: "gemini_vision",
-      words: extractedText.trim().split(/\s+/).length,
-      processingTime,
-      validation,
-    };
   } catch (error) {
-    console.error("[Gemini Vision OCR Error]", error.message);
-    throw error;
-  }
-}
-
-// Ultra-fast preprocessing
-export async function ultraFastPreprocess(imageBuffer, isMobile = false) {
-  try {
-    // Get image info first
-    const metadata = await sharp(imageBuffer).metadata();
-    console.log(
-      `📊 Original image: ${metadata.width}x${metadata.height}, format: ${metadata.format}`
-    );
-
-    // High resolution for better OCR
-    const maxWidth = isMobile
-      ? Math.min(metadata.width, 1800) // Higher for mobile OCR
-      : metadata.width > 3000
-      ? 2400
-      : Math.min(metadata.width, 2400);
-
-    const quality = isMobile ? 90 : 95; // High quality for better OCR
-
-    const processed = await sharp(imageBuffer)
-      .resize(maxWidth, null, {
-        withoutEnlargement: true,
-        kernel: sharp.kernel.lanczos3, // High quality kernel
-      })
-      // Minimal processing to preserve original image quality
-      .jpeg({
-        quality,
-        progressive: false,
-        mozjpeg: true,
-      })
-      .toBuffer();
-
-    console.log(
-      `✅ Processed: ${(processed.length / 1024).toFixed(1)}KB (${(
-        (1 - processed.length / imageBuffer.length) *
-        100
-      ).toFixed(1)}% reduction)`
-    );
-    return processed;
-  } catch (error) {
-    console.error("[Ultra Fast Preprocessing Error]", error);
-    return imageBuffer;
-  }
-}
-
-// Fallback to Tesseract with validation
-import Tesseract from "tesseract.js";
-
-export async function performFallbackOCR(imageBuffer) {
-  try {
-    console.log("🔄 Using fallback Tesseract OCR...");
-
-    const result = await Tesseract.recognize(imageBuffer, "eng", {
-      logger: () => {},
-      tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
-      tessedit_char_whitelist:
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789,().-% :",
+    if (error.name === "TimeoutError" || error.name === "AbortError") {
+      throw new AppError("Gemini Vision OCR timed out", {
+        code: "GEMINI_TIMEOUT",
+        statusCode: 504,
+      });
+    }
+    throw new AppError("Could not reach Gemini Vision", {
+      code: "GEMINI_UNREACHABLE",
+      statusCode: 503,
+      details: error.message,
     });
-
-    const extractedText = result.data.text;
-
-    // Validate the extracted text
-    const validation = validateIngredientText(extractedText);
-
-    if (!validation.isValid) {
-      throw new Error(`Invalid ingredient image: ${validation.reason}`);
-    }
-
-    return {
-      text: extractedText,
-      confidence: Math.min(result.data.confidence, validation.confidence),
-      method: "tesseract_fallback",
-      words: result.data.words?.length || 0,
-      validation,
-    };
-  } catch (error) {
-    console.error("[Fallback OCR Error]", error);
-    throw error;
   }
+
+  if (!response.ok) {
+    throw new AppError(`Gemini Vision returned HTTP ${response.status}`, {
+      code: "GEMINI_HTTP_ERROR",
+      statusCode: 502,
+    });
+  }
+
+  const result = await response.json();
+  const extractedText = result?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+  if (!extractedText.trim()) {
+    throw new AppError("No text extracted from image", {
+      code: "NO_TEXT_DETECTED",
+      statusCode: 400,
+    });
+  }
+
+  const cleanText = extractedText.trim().toUpperCase();
+  if (cleanText === "NO_INGREDIENTS_FOUND" || cleanText.includes("NO INGREDIENTS")) {
+    throw new AppError(
+      "No ingredient list found in the photo. Point the camera at the ingredients section of the label.",
+      { code: "NOT_AN_INGREDIENT_LABEL", statusCode: 422 }
+    );
+  }
+
+  const validation = validateIngredientText(extractedText);
+  if (!validation.isValid) {
+    throw new AppError(
+      "That does not look like a food ingredient label. Please photograph the ingredients section.",
+      { code: "NOT_AN_INGREDIENT_LABEL", statusCode: 422, details: validation.reason }
+    );
+  }
+
+  return {
+    text: extractedText.trim(),
+    confidence: Math.min(validation.confidence, 90),
+    method: "gemini_vision",
+    words: extractedText.trim().split(/\s+/).length,
+    processingTime: Date.now() - startTime,
+    validation,
+  };
 }
 
-// Smart OCR with validation
-export async function performSmartOCR(imageBuffer) {
-  // First try Gemini Vision (fast)
+/** Tesseract OCR. No key, no network, MIT licensed - the always-available path. */
+export async function performTesseractOCR(imageBuffer) {
+  const startTime = Date.now();
+
+  const result = await Tesseract.recognize(imageBuffer, "eng", {
+    logger: () => {},
+    tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
+    tessedit_char_whitelist:
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789,().-% :",
+  });
+
+  const extractedText = result.data.text;
+  const validation = validateIngredientText(extractedText);
+
+  if (!validation.isValid) {
+    throw new AppError(
+      "No readable ingredient list found. Try a sharper, better-lit photo of the ingredients section.",
+      { code: "NOT_AN_INGREDIENT_LABEL", statusCode: 422, details: validation.reason }
+    );
+  }
+
+  return {
+    text: extractedText,
+    confidence: Math.min(result.data.confidence, validation.confidence),
+    method: "tesseract",
+    words: result.data.words?.length || 0,
+    processingTime: Date.now() - startTime,
+    validation,
+  };
+}
+
+/**
+ * Run OCR, giving each engine the image it works best on.
+ *
+ * A 422 (this is not an ingredient label) is not retried on the other engine:
+ * both engines read the same photo, and asking Tesseract to re-read a picture
+ * Gemini just confirmed is not a label only burns 20 seconds.
+ */
+export async function performSmartOCR(imageBuffer, { isMobile = false } = {}) {
   if (process.env.GEMINI_API_KEY) {
     try {
-      console.log("🚀 Trying Gemini Vision OCR...");
-      const startTime = Date.now();
-
-      const result = await performGeminiVisionOCR(imageBuffer);
-      const processingTime = Date.now() - startTime;
-
-      console.log(
-        `✅ Gemini Vision: ${processingTime}ms, confidence: ${result.confidence}%`
-      );
-
-      return {
-        ...result,
-        processingTime,
-      };
+      const visionImage = await prepareForVision(imageBuffer, { isMobile });
+      const result = await performGeminiVisionOCR(visionImage);
+      logger.info("ocr complete", {
+        method: result.method,
+        ms: result.processingTime,
+        confidence: result.confidence,
+      });
+      return result;
     } catch (error) {
-      console.log(`❌ Gemini Vision failed: ${error.message}`);
-
-      // If it's a validation error, don't fallback - throw it up
-      if (
-        error.message.includes("Invalid ingredient image") ||
-        error.message.includes("does not appear to contain ingredient") ||
-        error.message.includes("quota exceeded") ||
-        error.message.includes("rate limit")
-      ) {
-        throw error;
-      }
-
-      console.log("🔄 Falling back to Tesseract...");
+      if (error.code === "NOT_AN_INGREDIENT_LABEL") throw error;
+      logger.warn("gemini vision ocr failed, falling back to tesseract", {
+        code: error.code,
+        reason: error.message,
+      });
     }
   }
 
-  // Fallback to Tesseract
-  try {
-    const startTime = Date.now();
-    const result = await performFallbackOCR(imageBuffer);
-    const processingTime = Date.now() - startTime;
-
-    console.log(
-      `⚠️ Tesseract fallback: ${processingTime}ms, confidence: ${result.confidence}%`
-    );
-
-    return {
-      ...result,
-      processingTime,
-    };
-  } catch (error) {
-    // If it's a validation error, provide user-friendly message
-    if (error.message.includes("Invalid ingredient image")) {
-      throw new Error(
-        "Please upload an image of a food product label with ingredient information"
-      );
-    }
-
-    console.error("All OCR methods failed:", error);
-    throw new Error(
-      "Unable to process image. Please ensure the image contains clear ingredient information."
-    );
-  }
+  const ocrImage = await preprocessForOcr(imageBuffer);
+  const result = await performTesseractOCR(ocrImage);
+  logger.info("ocr complete", {
+    method: result.method,
+    ms: result.processingTime,
+    confidence: result.confidence,
+  });
+  return result;
 }
 
-// Keep your existing functions for backward compatibility
-export async function preprocessImage(imageBuffer) {
-  const processedImages = [];
-
-  try {
-    const optimized = await ultraFastPreprocess(imageBuffer);
-    processedImages.push({ name: "optimized", buffer: optimized, priority: 1 });
-  } catch (error) {
-    console.error("[Preprocessing Error]", error);
-    processedImages.push({
-      name: "original",
-      buffer: imageBuffer,
-      priority: 3,
-    });
-  }
-
-  return processedImages;
-}
-
-export async function performOCRWithMultipleVersions(processedImages) {
-  const imageBuffer = processedImages[0]?.buffer || processedImages[0];
-  return await performSmartOCR(imageBuffer);
-}
+export default { performSmartOCR, performGeminiVisionOCR, performTesseractOCR, validateIngredientText };

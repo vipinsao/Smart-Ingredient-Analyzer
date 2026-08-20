@@ -1,0 +1,130 @@
+// services/imagePreprocessor.js - Image preparation before OCR.
+//
+// Two different consumers want two different images:
+//
+//   prepareForVision()  a vision model reads colour and layout, so it gets a
+//                       downscaled but otherwise faithful colour JPEG.
+//   preprocessForOcr()  Tesseract is a classical OCR engine working on glyph
+//                       shapes. It does better on a downscaled, grayscale,
+//                       contrast-normalised, sharpened image than on a large
+//                       colour photo, which is what a phone camera produces.
+import sharp from "sharp";
+import { OCR_PREPROCESS, VISION_PREPROCESS } from "../configuration/constants.js";
+import AppError from "../utils/AppError.js";
+import logger from "../utils/logger.js";
+
+/**
+ * Decode the header of the buffer and return its metadata.
+ * Throws a typed error when the bytes are not a decodable image, so an
+ * unreadable upload fails here with a clear message instead of silently
+ * travelling down the pipeline as an un-processed buffer.
+ */
+export async function inspectImage(buffer) {
+  try {
+    const metadata = await sharp(buffer).metadata();
+    if (!metadata.width || !metadata.height) {
+      throw new Error("missing dimensions");
+    }
+    return metadata;
+  } catch (error) {
+    throw new AppError(
+      "Image could not be decoded. Please upload a JPG, PNG or WebP photo.",
+      { code: "UNREADABLE_IMAGE", statusCode: 400, details: error.message }
+    );
+  }
+}
+
+function targetWidth(originalWidth, maxWidth) {
+  // Never upscale: enlarging a small photo invents no new detail and only
+  // makes OCR slower.
+  return Math.min(originalWidth, maxWidth);
+}
+
+/**
+ * Downscale + re-encode for a vision model. Colour is preserved.
+ */
+export async function prepareForVision(buffer, { isMobile = false } = {}) {
+  const metadata = await inspectImage(buffer);
+  const maxWidth = isMobile ? VISION_PREPROCESS.maxWidthMobile : VISION_PREPROCESS.maxWidth;
+  const width = targetWidth(metadata.width, maxWidth);
+
+  const output = await sharp(buffer)
+    .resize(width, null, { withoutEnlargement: true, kernel: sharp.kernel.lanczos3 })
+    .jpeg({
+      quality: isMobile ? VISION_PREPROCESS.qualityMobile : VISION_PREPROCESS.quality,
+      mozjpeg: true,
+    })
+    .toBuffer();
+
+  logger.debug("prepared image for vision model", {
+    sourceBytes: buffer.length,
+    outputBytes: output.length,
+    sourceWidth: metadata.width,
+    outputWidth: width,
+  });
+
+  return output;
+}
+
+/**
+ * Prepare an image for classical OCR.
+ *
+ * Steps, in order and each with a reason:
+ *   resize     - a 4000px phone photo costs Tesseract time without adding
+ *                legible detail; cap the long edge.
+ *   grayscale  - Tesseract binarises internally; colour is noise to it.
+ *   normalise  - stretches the histogram so a flat, badly-lit photo regains
+ *                separation between ink and paper.
+ *   sharpen    - counteracts the softening introduced by downscaling.
+ *   png        - lossless, so sharpened glyph edges are not re-blurred by JPEG
+ *                block artefacts.
+ */
+export async function preprocessForOcr(buffer, options = {}) {
+  const {
+    maxWidth = OCR_PREPROCESS.maxWidth,
+    grayscale = true,
+    normalise = true,
+    sharpen = true,
+  } = options;
+
+  const metadata = await inspectImage(buffer);
+  const width = targetWidth(metadata.width, maxWidth);
+
+  let pipeline = sharp(buffer).resize(width, null, {
+    withoutEnlargement: true,
+    kernel: sharp.kernel.lanczos3,
+  });
+
+  // .grayscale() sets the colours to grey; .toColourspace("b-w") is what
+  // actually writes a single-channel image, which is both what Tesseract wants
+  // and roughly a third of the bytes.
+  if (grayscale) pipeline = pipeline.grayscale().toColourspace("b-w");
+  if (normalise) pipeline = pipeline.normalise();
+  if (sharpen) pipeline = pipeline.sharpen(OCR_PREPROCESS.sharpen);
+
+  const output = await pipeline.png({ compressionLevel: 6 }).toBuffer();
+
+  logger.debug("preprocessed image for OCR", {
+    sourceBytes: buffer.length,
+    outputBytes: output.length,
+    sourceWidth: metadata.width,
+    outputWidth: width,
+    grayscale,
+    normalise,
+    sharpen,
+  });
+
+  return output;
+}
+
+/**
+ * Contrast measurement used by the tests to prove that `normalise` actually
+ * increases separation between text and background on a low-contrast image.
+ */
+export async function measureContrast(buffer) {
+  const { channels } = await sharp(buffer).stats();
+  const stdev = channels.reduce((sum, channel) => sum + channel.stdev, 0) / channels.length;
+  return stdev;
+}
+
+export default { inspectImage, prepareForVision, preprocessForOcr, measureContrast };
