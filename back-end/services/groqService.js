@@ -1,7 +1,30 @@
-// services/groqService.js - Groq AI Service
+// services/groqService.js - Ingredient analysis via Groq's OpenAI-compatible
+// chat completions API.
+//
+// The contract with the model is "return a JSON array of verdicts". A model
+// cannot be relied on to honour that, so every response goes through three
+// gates before it is trusted:
+//
+//   1. extractJsonArray - find the array even if the model wrapped it in prose
+//      or a code fence, and salvage whole objects out of a truncated array.
+//   2. parseAnalysis     - validate each row against the Zod schema, coercing
+//      what is coercible and dropping what is not.
+//   3. one retry         - if a response survives neither, ask again once with
+//      an explicit repair instruction. A second failure is a typed 502, not a
+//      crash and not a half-rendered result.
 import fetch from "node-fetch";
 import { env } from "../configuration/env.js";
-import { GROQ_TIMEOUT, GROQ_TOKENS } from "../configuration/constants.js";
+import { LLM_TIMEOUT, LLM_TOKENS } from "../configuration/constants.js";
+import { parseAnalysis } from "../schemas/analysis.js";
+import AppError from "../utils/AppError.js";
+import logger from "../utils/logger.js";
+
+const REPAIR_INSTRUCTION = `
+Your previous answer could not be parsed as JSON.
+Return ONLY a JSON array. No prose, no markdown fence, no trailing commas.
+Every element must have exactly these keys: "ingredient" (string),
+"status" (one of "Good", "Bad", "Neutral"), "reason" (string),
+"concerns" (array of strings).`;
 
 export class GroqService {
   constructor() {
@@ -45,161 +68,158 @@ Expected JSON format:
 }]`;
   }
 
-  async analyze(ingredients, options = {}) {
-    const { isMobile = false, fastMode = true } = options;
+  /**
+   * Pull a JSON array out of a model response.
+   *
+   * Handles the two failure shapes seen in practice: a code fence around the
+   * array, and an array truncated by the token limit. In the truncated case the
+   * complete `{...}` objects are salvaged and the incomplete tail is dropped -
+   * eleven good verdicts are worth more than an error page.
+   *
+   * @returns {Array|null} null when nothing parseable was found.
+   */
+  static extractJsonArray(text) {
+    if (typeof text !== "string" || text.trim() === "") return null;
+
+    const cleaned = text
+      .trim()
+      .replace(/^```json/i, "")
+      .replace(/^```/, "")
+      .replace(/```$/, "")
+      .trim();
+
+    const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
+    const candidate = arrayMatch ? arrayMatch[0] : cleaned;
 
     try {
-      const prompt = this.createPrompt(ingredients);
-      const timeout = isMobile
-        ? GROQ_TIMEOUT.mobile
-        : fastMode
-        ? GROQ_TIMEOUT.fast
-        : GROQ_TIMEOUT.normal;
-      const maxTokens = isMobile
-        ? GROQ_TOKENS.mobile
-        : fastMode
-        ? GROQ_TOKENS.fast
-        : GROQ_TOKENS.normal;
+      const parsed = JSON.parse(candidate);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch {
+      const objectMatches = candidate.match(/{[^{}]*}/g) || [];
+      if (objectMatches.length === 0) return null;
 
-      const startTime = Date.now();
-
-      const response = await Promise.race([
-        this.sendRequest(prompt, maxTokens),
-        this.createTimeoutPromise(timeout),
-      ]);
-
-      const aiTime = Date.now() - startTime;
-
-      if (!response.ok) {
-        let errorMessage = `Groq API HTTP ${response.status}`;
-        try {
-          const errorData = await response.json();
-          errorMessage += `: ${errorData.error?.message || "Unknown error"}`;
-        } catch {
-          // ignore JSON parse errors for error responses
-        }
-        const err = new Error(errorMessage);
-        err.code = "GROQ_HTTP_ERROR";
-        throw err;
-      }
-
-      const data = await response.json();
-
-      if (data.error) {
-        const err = new Error(data.error.message || "Groq API error");
-        err.code = "GROQ_API_ERROR";
-        throw err;
-      }
-
-      let groqText = data.choices?.[0]?.message?.content || "";
-
-      if (!groqText) {
-        const err = new Error("Empty response from Groq API");
-        err.code = "GROQ_EMPTY_CONTENT";
-        throw err;
-      }
-
-      // --- Clean & extract JSON array safely ---
-
-      // Remove any code fences if they appear
-      let cleaned = groqText
-        .trim()
-        .replace(/^```json/i, "")
-        .replace(/^```/, "")
-        .replace(/```$/, "")
-        .trim();
-
-      // Try to grab the main JSON array: [ ... ]
-      const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
-      if (!arrayMatch) {
-        const err = new Error("Groq did not return a JSON array");
-        err.code = "GROQ_NO_JSON";
-        throw err;
-      }
-
-      const jsonText = arrayMatch[0];
-
-      let analysis;
       try {
-        // Primary parse attempt
-        analysis = JSON.parse(jsonText);
-      } catch (parseError) {
-        console.warn(
-          "Primary JSON.parse failed, attempting salvage:",
-          parseError.message
-        );
-
-        // Salvage: collect all complete { ... } objects and build an array
-        const objectMatches = jsonText.match(/{[^}]*}/g) || [];
-
-        if (objectMatches.length === 0) {
-          const err = new Error(
-            `Failed to parse Groq response: ${parseError.message}`
-          );
-          err.code = "GROQ_PARSE_ERROR";
-          throw err;
-        }
-
-        const safeArrayText = `[${objectMatches.join(",")}]`;
-
-        try {
-          analysis = JSON.parse(safeArrayText);
-        } catch (error2) {
-          const err = new Error(
-            `Failed to parse Groq response after salvage: ${error2.message}`
-          );
-          err.code = "GROQ_PARSE_ERROR";
-          throw err;
-        }
+        return JSON.parse(`[${objectMatches.join(",")}]`);
+      } catch {
+        return null;
       }
-
-      // Normalize result
-      if (!Array.isArray(analysis)) {
-        analysis = [analysis];
-      }
-
-      if (analysis.length === 0) {
-        const err = new Error("Empty analysis array");
-        err.code = "GROQ_EMPTY_ANALYSIS";
-        throw err;
-      }
-
-      return {
-        analysis,
-        aiTime,
-        success: true,
-      };
-    } catch (error) {
-      console.error("❌ Groq Service Error:", error);
-      throw error;
     }
   }
 
-  async sendRequest(prompt, maxTokens) {
-    return fetch(this.baseUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.apiKey}`,
-      },
-      body: JSON.stringify({
-        model: this.model,
-        temperature: 0.1,
-        max_tokens: maxTokens,
-        messages: [
-          {
-            role: "user",
-            content: prompt,
-          },
-        ],
-      }),
-    });
+  async analyze(ingredients, options = {}) {
+    const { isMobile = false, fastMode = true } = options;
+
+    const timeout = isMobile ? LLM_TIMEOUT.mobile : fastMode ? LLM_TIMEOUT.fast : LLM_TIMEOUT.normal;
+    const maxTokens = isMobile ? LLM_TOKENS.mobile : fastMode ? LLM_TOKENS.fast : LLM_TOKENS.normal;
+
+    const basePrompt = this.createPrompt(ingredients);
+    const startTime = Date.now();
+
+    let lastFailure = null;
+
+    // Attempt 1: the normal prompt. Attempt 2: the same prompt plus an
+    // explicit repair instruction.
+    for (const attempt of [1, 2]) {
+      const prompt = attempt === 1 ? basePrompt : `${basePrompt}\n${REPAIR_INSTRUCTION}`;
+
+      const content = await this.requestCompletion(prompt, maxTokens, timeout);
+      const raw = GroqService.extractJsonArray(content);
+
+      if (raw) {
+        try {
+          const { verdicts, dropped } = parseAnalysis(raw);
+          if (dropped > 0) {
+            logger.warn("dropped unusable verdict rows from model response", {
+              dropped,
+              kept: verdicts.length,
+              attempt,
+            });
+          }
+          return {
+            analysis: verdicts,
+            aiTime: Date.now() - startTime,
+            attempts: attempt,
+            droppedRows: dropped,
+            success: true,
+          };
+        } catch (error) {
+          lastFailure = error.message;
+        }
+      } else {
+        lastFailure = "response contained no parseable JSON array";
+      }
+
+      logger.warn("model response failed validation", { attempt, reason: lastFailure });
+    }
+
+    throw new AppError(
+      "The analysis service returned an unusable response. Please try again.",
+      { code: "ANALYSIS_UNAVAILABLE", statusCode: 502, details: lastFailure }
+    );
   }
 
-  createTimeoutPromise(timeoutMs) {
-    return new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Groq timeout")), timeoutMs)
-    );
+  /** One HTTP call to Groq. Returns the assistant message content. */
+  async requestCompletion(prompt, maxTokens, timeoutMs) {
+    let response;
+    try {
+      response = await fetch(this.baseUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify({
+          model: this.model,
+          temperature: 0.1,
+          max_tokens: maxTokens,
+          messages: [{ role: "user", content: prompt }],
+        }),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+    } catch (error) {
+      if (error.name === "TimeoutError" || error.name === "AbortError") {
+        throw new AppError("Analysis timed out. Please try again.", {
+          code: "ANALYSIS_TIMEOUT",
+          statusCode: 504,
+        });
+      }
+      throw new AppError("Could not reach the analysis service.", {
+        code: "ANALYSIS_UNREACHABLE",
+        statusCode: 503,
+        details: error.message,
+      });
+    }
+
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try {
+        const body = await response.json();
+        detail = body?.error?.message || detail;
+      } catch {
+        // Groq returned a non-JSON error body; the status alone is the detail.
+      }
+
+      // 429 from the provider is a rate limit, not our bug - say so plainly.
+      const statusCode = response.status === 429 ? 429 : 502;
+      throw new AppError(
+        response.status === 429
+          ? "Analysis service is rate limited. Please wait a moment and try again."
+          : "Analysis service returned an error.",
+        { code: response.status === 429 ? "ANALYSIS_RATE_LIMITED" : "ANALYSIS_HTTP_ERROR", statusCode, details: detail }
+      );
+    }
+
+    const data = await response.json();
+    const content = data?.choices?.[0]?.message?.content;
+
+    if (typeof content !== "string" || content.trim() === "") {
+      throw new AppError("Analysis service returned an empty response.", {
+        code: "ANALYSIS_EMPTY",
+        statusCode: 502,
+      });
+    }
+
+    return content;
   }
 }
 
