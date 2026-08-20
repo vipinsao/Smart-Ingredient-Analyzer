@@ -177,6 +177,78 @@ and a missing corpus degrade. Everything else propagates. Degrading on a
 provider error would be pointless anyway, since the ungrounded path calls the
 same provider — there is a test for exactly that.
 
+"Loud" describes a moment, not a state. The degraded result used to be written
+to the cache under the ordinary 48-hour TTL, so one uncitable reply pinned an
+unsourced answer to that photo — and to every photo yielding the same
+ingredient text — for two days after the provider recovered, with no
+invalidation path short of a restart. It now gets `CACHE_CONFIG.degradedTTL`,
+60 seconds. Not caching it at all would be equally correct and would re-run
+OCR, the expensive half, for every retry during an outage; a minute keeps that
+protection and caps the staleness. The policy lives in `CacheManager.setResult`
+rather than at the three call sites, because a degraded result written through
+plain `set()` from any one of them restores the whole class.
+
+## The gap must be attributed correctly, or reporting it is worse than useless
+
+This system's product is not its verdicts. It is that an ingredient it will not
+rule on is *said* to be one, with the reason. That makes a wrong reason the
+worst failure available to it — a plausible answer where an error belonged.
+
+Two mechanisms enforce it.
+
+**Every ingredient named in the prompt carries its own evidence.** The passage
+budget used to be spent front to back while the ingredient list was built
+independently of it, so past roughly eight non-overlapping ingredients the
+later ones were named to the model with none of their passages attached. The
+model declined, correctly, and the response reported "Retrieved passages did
+not support a verdict" about passages that had been retrieved, had cleared both
+abstention thresholds, and had then been deleted by a budget the user never
+sees. `selectContextChunks` now spends the budget one round at a time — every
+ingredient gets its best passage before any gets its second — and
+`contextBudgetFor` never lets the budget fall below one passage per ingredient.
+The ingredient list is built *from* what selection covered, so the prompt can
+only ask about evidence it is carrying.
+
+Batching into several model calls would give 25 ingredients 25 ingredients'
+worth of evidence, and was rejected: it multiplies latency and provider cost
+against a 20-second mobile timeout to buy supporting passages rather than
+coverage, which round-robin already guarantees.
+
+**Uncovered entries carry a code.** `NO_SOURCE`, `MODEL_DECLINED` and
+`BUDGET_DROPPED` are three different facts about the world and shared one
+sentence between them. They no longer do, in the payload or in the UI.
+
+## Coverage is attributed on our side, not taken from the model's free text
+
+Which ingredients went unanswered used to be decided by an exact lowercased
+compare against the `ingredient` string the model wrote itself. Nothing
+constrains a model to echo the string it was given, so a reply of `"sodium
+benzoate"` to a label reading `"Sodium Benzoate (E211)"` was returned in
+`analysis` *and* pushed to `uncovered`, and
+`coverage.analysed + coverage.uncovered` exceeded `coverage.parsed`.
+
+`matchVerdictsToNames` attributes each verdict back to the label's own wording
+over an explicit alias set: the name, the name without its parenthetical, and
+the parenthetical itself. It does no fuzzy or substring matching on purpose —
+`"sugar"` capturing `"sugar syrup"` would attribute a verdict to an ingredient
+nobody ruled on, which is the same class of error as the one above, not a
+smaller one.
+
+The obvious alternative is to number the ingredients `I1..In` the way the
+passages are already numbered `C1..Cn` and have the verdict cite its ingredient
+by index. That is exact — when the model emits the token correctly. When it does
+not, a rename stops being a recoverable mismatch and becomes a lost verdict and
+a retry, and the failure lands on the same provider compliance the citation
+check already spends its retry budget on. Attribution is done here instead,
+where it is deterministic and testable without a provider key.
+
+The invariant this buys is worth stating plainly:
+`verdicts.length + uncovered.length === considered.length` on the grounded
+path, always, and `coverage.reconciled` tells the caller when it applies. The
+degraded path answers from a prompt built on raw label text rather than on the
+parsed list, so it reports no reconciliation rather than an arithmetic that
+does not hold.
+
 ## Open Food Facts, and what ODbL asks for
 
 The corpus is built from the Open Food Facts additives, additive-classes and
@@ -293,6 +365,10 @@ The original implementation had only the text key, which meant OCR ran on every
 request; a cache hit saved 3.5s of a 25s request. It is an in-process cache, so
 it is lost on restart and not shared across instances — the right shape for a
 single free-tier container, and the wrong shape for anything larger.
+
+An entry's TTL depends on what the entry claims: a sourced result keeps the
+full 48 hours, a `grounded: false` result keeps 60 seconds. See [The degraded
+path is loud](#the-degraded-path-is-loud).
 
 ## Rate limiting sits on the route that costs money
 

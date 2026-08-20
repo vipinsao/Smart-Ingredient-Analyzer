@@ -58,7 +58,8 @@ flowchart TD
     G["Isolate + split the ingredient list<br/>utils/helpers.js"]
     H["Hybrid retrieval per ingredient<br/>BM25 + MiniLM embeddings, fused by RRF<br/>rag/retriever.js"]
     I{"Both retrievers weak?"}
-    J["Report as uncovered.<br/>No model call for this ingredient."]
+    J["Report as uncovered: NO_SOURCE.<br/>No model call for this ingredient."]
+    K1["Fair-share the passage budget<br/>one round per ingredient, so every<br/>ingredient named carries its own evidence<br/>rag/groundedAnalysis.js selectContextChunks"]
     K["Grounded generation over<br/>numbered passages<br/>rag/groundedAnalysis.js"]
     L["Zod schema + citation resolution<br/>rag/groundedAnalysis.js"]
     M{"Every citation resolves?"}
@@ -70,7 +71,7 @@ flowchart TD
     D -- hit --> P
     D -- miss --> E --> F --> G --> H --> I
     I -- yes --> J --> P
-    I -- no --> K --> L --> M
+    I -- no --> K1 --> K --> L --> M
     M -- no --> N --> L
     M -- yes --> O --> P
 ```
@@ -172,6 +173,20 @@ public dataset. A verdict with no citation, or one citing a passage id that was
 never in the prompt, is rejected and the model is asked again. An ingredient
 the corpus does not describe comes back in an `uncovered` list with the reason
 attached. **Reporting the gap is the feature.**
+
+Which makes a *misattributed* gap the worst failure this system has, so each
+`uncovered` entry carries a code rather than one all-purpose sentence:
+
+| code | what actually happened |
+| --- | --- |
+| `NO_SOURCE` | retrieval found nothing above threshold. The corpus does not cover it. |
+| `MODEL_DECLINED` | the passages were retrieved and put to the model, and it would not draw a verdict from them. |
+| `BUDGET_DROPPED` | passages were retrieved and then dropped to fit the prompt, so nothing was asked about this ingredient. Unreachable in the shipped configuration — the passage budget is never allowed below one passage per ingredient — and kept so that a future budget change surfaces under its own name. |
+
+`coverage.analysed + coverage.uncovered === coverage.parsed` on the grounded
+path, always; `coverage.reconciled` reports whether that guarantee applies.
+[ARCHITECTURE.md §10](./ARCHITECTURE.md#10-defects-found-while-writing-this-document--and-fixed)
+has the two defects this replaced and how each was reproduced.
 
 ## Measured results
 
@@ -579,7 +594,9 @@ argued in [DECISIONS.md](./DECISIONS.md).
   warm) were measured against that older build and are not comparable to
   anything in [MEASUREMENTS.md](./MEASUREMENTS.md).
 - **The result cache is in-process.** Lost on restart, not shared between
-  instances.
+  instances. A result that came back `grounded: false` is cached for 60 seconds
+  rather than the usual 48 hours (`DEGRADED_CACHE_TTL`), so a moment of
+  provider trouble cannot pin an unsourced answer to a photo for two days.
 - **English only.** Only `eng.traineddata` is bundled.
 - **No tests for the React components.** The frontend is covered by lint and a
   build in CI, nothing more.

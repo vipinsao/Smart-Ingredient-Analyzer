@@ -120,15 +120,15 @@ Stage map:
 | admission + validation span | `back-end/server.js:221-250` |
 | the validators themselves | `back-end/utils/validators.js:11-123` |
 | magic-byte sniff | `back-end/utils/validators.js:52-74`, table at `back-end/configuration/constants.js:61-68` |
-| image cache | `back-end/server.js:270-288`, `back-end/utils/cache.js:19-26` |
+| image cache | `back-end/server.js:270-288`, `back-end/utils/cache.js:44-51` |
 | preprocess | `back-end/services/imagePreprocessor.js:67-84` |
 | OCR engine choice + fallback | `back-end/optimized-ocr.js:268-325` |
 | pooled recognition | `back-end/services/ocrPool.js:234-255` |
 | ingredient isolation and splitting | `back-end/utils/helpers.js:39-140`, `:141-200` |
-| retrieval per ingredient | `back-end/rag/groundedAnalysis.js:165-183` |
-| grounded generation + citation check | `back-end/rag/groundedAnalysis.js:198-263` |
-| deterministic allergens + score | `back-end/server.js:339-345` |
-| degraded fallback | `back-end/services/analysisService.js:57-84` |
+| retrieval per ingredient | `back-end/rag/groundedAnalysis.js:346-369` |
+| grounded generation + citation check | `back-end/rag/groundedAnalysis.js:414-487` |
+| deterministic allergens + score | `back-end/server.js:344-350` |
+| degraded fallback | `back-end/services/analysisService.js:63-97` |
 
 Two orderings carry weight:
 
@@ -139,7 +139,7 @@ Two orderings carry weight:
   (`back-end/utils/validators.js:52-58`).
 - **Retrieval happens before generation, per ingredient, and an ingredient whose
   retrieval abstains never reaches the model at all**
-  (`back-end/rag/groundedAnalysis.js:151-175`). The model is not asked to decide
+  (`back-end/rag/groundedAnalysis.js:337-369`). The model is not asked to decide
   whether it knows something.
 
 ---
@@ -171,7 +171,7 @@ flowchart TD
     I -->|yes| J{"5+ chars of ingredient text?"}
     J -->|no| J1["422 INSUFFICIENT_INGREDIENTS<br/>server.js:299-309"]
     J -->|yes| K{"per ingredient: either retriever confident?"}
-    K -->|no| K1["ingredient listed as UNCOVERED<br/>no model call for it<br/>groundedAnalysis.js:168-175"]
+    K -->|no| K1["ingredient listed as UNCOVERED<br/>no model call for it<br/>groundedAnalysis.js:351-364"]
     K -->|yes| L{"model returned parseable JSON?"}
     L -->|no| M["retry once with the failure named"]
     L -->|yes| N{"every citation resolves to a C-id in the prompt?"}
@@ -195,7 +195,7 @@ DECISIONS.md, "The abstention threshold, and why it is not the best one".
 
 **A citation that names an id which was not in the prompt invalidates the
 verdict resting on it.** `validateCitations`
-(`back-end/rag/groundedAnalysis.js:63-89`) rejects a verdict with no citations
+(`back-end/rag/groundedAnalysis.js:247-273`) rejects a verdict with no citations
 at all, and a verdict citing `C7` when only six passages were supplied. The
 comment states the reasoning: the model has invented the evidence, so the
 verdict cannot be trusted even if it happens to be correct.
@@ -205,13 +205,13 @@ allow-list of exactly `GROUNDED_ANALYSIS_FAILED` and `CORPUS_UNAVAILABLE`
 (`back-end/services/analysisService.js:20-28`); anything else propagates rather
 than quietly switching the app to unsourced verdicts. When it does degrade the
 response carries `grounded: false` and a `degradedReason` sentence
-(`back-end/services/analysisService.js:68-83`), and every verdict has its
+(`back-end/services/analysisService.js:74-96`), and every verdict has its
 `citations` and `sources` explicitly emptied
-(`back-end/services/analysisService.js:72`) rather than left looking sourced.
+(`back-end/services/analysisService.js:78`) rather than left looking sourced.
 
 **And two things are never asked of the model at all.** Allergen flags come from
 a keyword table matched on word boundaries, and the health score is arithmetic
-over the verdicts (`back-end/server.js:339-345`,
+over the verdicts (`back-end/server.js:344-350`,
 `back-end/configuration/constants.js:21-38`). A user with a peanut allergy needs
 the same answer every time for the same label; a generative model gives no such
 guarantee.
@@ -295,12 +295,12 @@ build-time variable is `VITE_API_URL`.
 
 One thing worth naming plainly: **OCR output is untrusted text that is then
 interpolated into a model prompt.** `buildPrompt`
-(`back-end/rag/groundedAnalysis.js:102-121`) substitutes ingredient names that
+(`back-end/rag/groundedAnalysis.js:286-305`) substitutes ingredient names that
 came from a photograph the caller supplied. What limits that is not escaping —
 there is none — but scope: the names are the output of
 `parseIngredientList`, each is a short fragment split on top-level punctuation
 (`back-end/utils/helpers.js:141-200`), at most 25 of them
-(`back-end/rag/groundedAnalysis.js:145`), and every verdict that comes back must
+(`back-end/rag/groundedAnalysis.js:332`), and every verdict that comes back must
 still resolve to a passage id from the prompt. A prompt injection that produced
 an uncitable verdict would be dropped by `validateCitations`; one that produced a
 *citable* verdict is bounded by what the corpus actually says.
@@ -377,10 +377,10 @@ used at `back-end/server.js:182-211`).
 the content.** `maxKeys: 500` is not tidiness: appending one byte after a JPEG's
 EOI marker changes the sha256 without changing a pixel, so an unbounded cache is
 an unbounded allocation with a 48-hour TTL holding every entry
-(`back-end/configuration/constants.js:40-50`). And because node-cache enforces
+(`back-end/configuration/constants.js:41-65`). And because node-cache enforces
 `maxKeys` by *throwing* `ECACHEFULL` rather than evicting, `CacheManager.set`
 catches it and drops the oldest key — without that, the bound would trade a
-memory leak for an outage (`back-end/utils/cache.js:32-51`).
+memory leak for an outage (`back-end/utils/cache.js:33-65`).
 
 ---
 
@@ -413,7 +413,7 @@ flowchart TB
 | --- | --- | --- |
 | `server.js` | the HTTP contract: status codes, the response body, cache lookups, timing marks | how OCR works, how retrieval works, how a verdict is validated |
 | `services/analysisService.js` | one decision — grounded, or loudly degraded | HTTP, prompts, retrieval internals |
-| `rag/groundedAnalysis.js` | the grounded protocol: retrieve, number, prompt, validate citations, retry once | the model client and the JSON extractor, both **injected** (`groundedAnalysis.js:138-144`) |
+| `rag/groundedAnalysis.js` | the grounded protocol: retrieve, number, prompt, validate citations, retry once | the model client and the JSON extractor, both **injected** (`groundedAnalysis.js:321-331`) |
 | `rag/retriever.js` | fusion, thresholds, the corpus | prompts, HTTP |
 | `services/groqService.js` | every HTTP call to the provider, and salvaging JSON out of its replies | retrieval, citations |
 | `services/ocrPool.js` | worker lifecycle, admission control, the deadline | image content |
@@ -423,14 +423,14 @@ flowchart TB
 
 1. **`groundedAnalysis.js` cannot reach the network**, because it has no import
    that can. `complete` and `extractJsonArray` are parameters
-   (`back-end/rag/groundedAnalysis.js:138-144`), which is why
+   (`back-end/rag/groundedAnalysis.js:321-331`), which is why
    `back-end/tests/rag-grounded.test.js` drives the entire grounded path — retry
    included — with no API key. That is a real boundary: adding a `fetch` there
    would break the tests immediately.
 2. **The evaluation harness imports the *application's* prompt builders**, not
    copies of them (`back-end/rag/eval/run-eval.js:16`,
    `back-end/rag/eval/run-generation-eval.js:45`). `buildRetryPrompt` is exported
-   for exactly this reason, stated at `back-end/rag/groundedAnalysis.js:123-127`:
+   for exactly this reason, stated at `back-end/rag/groundedAnalysis.js:307-311`:
    a harness that re-words the retry is measuring a prompt this application never
    sends.
 3. **`telemetry.js` deliberately does not import the OCR pool.** The queue-depth
@@ -521,7 +521,7 @@ workers is not slightly worse, it is much worse, and worse even at concurrency 1
 Everything else that looks like shared state is a module-scoped singleton with a
 lazy initialiser: the retriever (`back-end/rag/retriever.js:180-186`), the
 embedding pipeline (`back-end/rag/embedder.js:21-41`), the cache
-(`back-end/utils/cache.js:74`). All are read-mostly and none is written from a
+(`back-end/utils/cache.js:100`). All are read-mostly and none is written from a
 request.
 
 ---
@@ -534,14 +534,14 @@ request.
 | **Groq times out** | 504 `ANALYSIS_TIMEOUT` at 20 s (`AbortSignal.timeout`). | `back-end/services/groqService.js:230-236`, `back-end/configuration/constants.js:93-97` |
 | **Groq unreachable** | 503 `ANALYSIS_UNREACHABLE`. | `back-end/services/groqService.js:237-242` |
 | **Groq answers 429** | Passed through as 429 `ANALYSIS_RATE_LIMITED` — a provider rate limit is not our bug, and saying so plainly is the difference between "wait" and "file an issue". | `back-end/services/groqService.js:244-261` |
-| **Groq returns unparseable or uncitable output** | One retry, worded with the specific failure; then 502 `GROUNDED_ANALYSIS_FAILED`, which is the one code that triggers the loud degrade. | `back-end/rag/groundedAnalysis.js:198-232`, `:266-270` |
+| **Groq returns unparseable or uncitable output** | One retry, worded with the specific failure; then 502 `GROUNDED_ANALYSIS_FAILED`, which is the one code that triggers the loud degrade. | `back-end/rag/groundedAnalysis.js:414-446`, `:490-494` |
 | **Groq returns a truncated array** | Whole `{...}` objects are salvaged and the incomplete tail dropped — eleven good verdicts beat an error page. | `back-end/services/groqService.js:72-108` |
-| **Corpus files missing or inconsistent** | Load throws naming the fix (`re-run rag/ingest.js`); `analysisService` matches that on both the code and a message regex and degrades loudly. | `back-end/rag/retriever.js:84-89`, `back-end/services/analysisService.js:57-60` |
+| **Corpus files missing or inconsistent** | Load throws naming the fix (`re-run rag/ingest.js`); `analysisService` matches that on both the code and a message regex and degrades loudly. | `back-end/rag/retriever.js:84-89`, `back-end/services/analysisService.js:63-66` |
 | **Gemini configured but failing** | Falls back to Tesseract, **except** for a 422 `NOT_AN_INGREDIENT_LABEL`, which is re-thrown: both engines read the same photo, so re-reading one Gemini just confirmed is not a label only burns 20 more seconds. | `back-end/optimized-ocr.js:261-292` |
 | **Gemini hangs** | 15 s `AbortSignal.timeout` → 504, then the Tesseract fallback. | `back-end/configuration/constants.js:109-111`, `back-end/optimized-ocr.js:163-180` |
 | **Tesseract worker errors on an undecodable image** | An `errorHandler` is supplied to `createWorker` — **not optional**: without one tesseract.js re-throws inside its own message handler where nothing can catch it, so one bad image takes the process down. | `back-end/services/ocrPool.js:140-146` |
 | **Warm-up fails at boot** | Logged, not fatal. Every warmed path also initialises lazily, so a failed warm-up costs latency, not availability — and `/health` answers throughout, because a probe that times out during warm-up restarts the container it is waiting for. | `back-end/server.js:448-480`, `:177-181` |
-| **Cache is full** | Oldest key evicted, request proceeds. | `back-end/utils/cache.js:42-51` |
+| **Cache is full** | Oldest key evicted, request proceeds. | `back-end/utils/cache.js:56-65` |
 | **SIGTERM / SIGINT** | Terminate the OCR child processes, flush telemetry, close the cache, exit — with a 5 s deadline, because a shutdown that hangs on a stuck worker is not a shutdown. Without this the workers outlive the signal and the container has to be killed rather than stopped. | `back-end/server.js:411-446` |
 | **Unhandled rejection** | Logged. Node 20+ would otherwise terminate with no explanation. | `back-end/server.js:405-409` |
 
@@ -586,11 +586,14 @@ request.
 
 ---
 
-## 10. Defects found while writing this document
+## 10. Defects found while writing this document — and fixed
 
-### 10.1 The context budget silently converts covered ingredients into "uncovered"
+All three were reproduced before being fixed, and each carries a test that
+fails against the code as it stood when this section was first written.
 
-`back-end/rag/groundedAnalysis.js:18-20` sets three limits:
+### 10.1 The context budget silently converted covered ingredients into "uncovered" — FIXED
+
+`back-end/rag/groundedAnalysis.js` set three limits:
 
 ```js
 export const MAX_INGREDIENTS = 25;
@@ -598,49 +601,73 @@ export const CHUNKS_PER_INGREDIENT = 3;
 export const MAX_CONTEXT_CHUNKS = 24;
 ```
 
-The retrieval loop appends each ingredient's passages to a shared `chunkOrder`
-and stops adding once the cap is reached (`:179`):
+The retrieval loop appended each ingredient's passages to a shared `chunkOrder`
+and stopped adding once the cap was reached:
 
 ```js
 if (seenChunks.has(chunk.id) || chunkOrder.length >= MAX_CONTEXT_CHUNKS) continue;
 ```
 
-but the ingredient itself is still pushed onto `grounded` at `:177`, **before**
-that loop runs, and `buildPrompt(block, grounded)` at `:194` lists every one of
-them. So once 24 distinct chunks have accumulated — as few as **eight
-ingredients** when their passages do not overlap — every later ingredient is
-named in the prompt with none of its evidence in the context block.
+but the ingredient itself was pushed onto `grounded` **before** that loop ran,
+and `buildPrompt(block, grounded)` listed every one of them. So once 24 distinct
+chunks had accumulated — as few as **eight ingredients** when their passages do
+not overlap — every later ingredient was named in the prompt with none of its
+evidence in the context block.
 
-The model is instructed to "omit that ingredient entirely rather than guessing"
-(`:109`), which is exactly what it should do. The result is that those
-ingredients fall through to the sweep at `:234-244` and are reported as:
+The model is instructed to "omit that ingredient entirely rather than guessing",
+which is exactly what it should do. Those ingredients therefore fell through to
+the sweep and were reported as:
 
 > "Retrieved passages did not support a verdict for this ingredient."
 
-That sentence is false for this class of ingredient. The passages *did* support a
-verdict — they were retrieved, they cleared both abstention thresholds, and they
-were then dropped by a budget the message says nothing about. A reader of the
-response cannot distinguish "the corpus has nothing on this" from "we ran out of
-prompt", and those call for completely different actions.
+That sentence was false for this class of ingredient. The passages *did* support
+a verdict — they were retrieved, they cleared both abstention thresholds, and
+they were then dropped by a budget the message said nothing about. A reader
+could not distinguish "the corpus has nothing on this" from "we ran out of
+prompt", and those call for completely different actions. No unsupported verdict
+was ever produced, so this was a truthfulness bug in the `uncovered` reason and
+in `coverage.uncovered` rather than a fabrication — but the whole point of this
+subsystem is that the gap it reports is trustworthy, so a reason string that
+misattributes the gap is the wrong kind of wrong for this codebase in
+particular.
 
-It is worth being precise about severity: this is a truthfulness bug in the
-`uncovered` reason and in `coverage.uncovered`
-(`back-end/server.js:355-359`), not a fabrication — no unsupported verdict is
-produced. But the whole point of this subsystem is that the gap it reports is
-trustworthy, so a reason string that misattributes the gap is the wrong kind of
-wrong for this codebase in particular.
+**Reproduced:** ten ingredients with three passages each, against the
+24-passage budget, put 24 passages and all ten ingredient names in the prompt,
+returned eight verdicts, and reported ingredients 9 and 10 as unsupported by
+their own evidence.
 
-Neither `MAX_CONTEXT_CHUNKS` nor its interaction with `MAX_INGREDIENTS` is
-mentioned in README.md or DECISIONS.md; the only other reference in the repo is
-the eval harness reproducing the same cap for prompt-size realism
-(`back-end/rag/eval/run-eval.js:308`). The narrow fix is to record which
-ingredients were truncated out and give them their own reason; the fuller one is
-to batch the generation call so 25 ingredients get 25 ingredients' worth of
-evidence.
+**Fixed** by choosing the passages before naming the ingredients:
 
-### 10.2 A verdict the model renames is counted as uncovered *and* returned
+| piece | what it does | where |
+| --- | --- | --- |
+| `selectContextChunks` | spends the budget one round at a time — every ingredient gets its top passage before any gets its second | `back-end/rag/groundedAnalysis.js:137-163` |
+| `contextBudgetFor` | never returns a budget below one passage per ingredient; `MAX_INGREDIENTS` caps that at 25, one passage over target rather than an unbounded prompt | `back-end/rag/groundedAnalysis.js:112-114` |
+| prompt construction | names only the ingredients whose passages survived selection, so the prompt can only ask about evidence it is carrying | `back-end/rag/groundedAnalysis.js:371-411` |
 
-Immediately below, `:236-244` decides which ingredients went unanswered by exact
+The same ten-ingredient label now returns ten verdicts inside the same
+24-passage budget. Batching into several model calls was the alternative — it
+would give 25 ingredients 25 ingredients' worth of evidence — and was rejected
+because it multiplies latency and provider cost against a 20-second mobile
+timeout to buy supporting passages, not coverage: round-robin already
+guarantees every ingredient its best passage.
+
+An ingredient can now carry no verdict for three reasons and they no longer
+share a sentence (`back-end/rag/groundedAnalysis.js:54-56`):
+
+| code | meaning |
+| --- | --- |
+| `NO_SOURCE` | retrieval found nothing above threshold. The honest gap. |
+| `MODEL_DECLINED` | passages were put in front of the model and it would not rule. |
+| `BUDGET_DROPPED` | passages were retrieved and then dropped to fit the prompt. Nothing was asked about this ingredient at all. |
+
+`BUDGET_DROPPED` is unreachable in the shipped configuration — the budget floor
+above sees to that — and exists so that a future budget change surfaces under
+its own name instead of as a lie about retrieval. `AnalysisResult.jsx` renders
+the three under three headings.
+
+### 10.2 A verdict the model renamed was counted as uncovered *and* returned — FIXED
+
+Immediately below, the sweep decided which ingredients went unanswered by exact
 string match:
 
 ```js
@@ -650,43 +677,75 @@ for (const name of grounded) {
 }
 ```
 
-Nothing constrains the model to echo the ingredient string it was given. The
-prompt supplies a list and the schema requires a non-empty `ingredient` field
-(`back-end/rag/groundedAnalysis.js:23`), but a reply of `"Sodium Benzoate (INS
-211)"` for an input of `"sodium benzoate"` validates, cites correctly, and is
-returned in `analysis` — while the original name is *also* pushed to `uncovered`,
-because the lowercased strings differ.
+Nothing constrains the model to echo the ingredient string it was given. A
+reply of `"sodium benzoate"` for an input of `"Sodium Benzoate (E211)"`
+validates, cites correctly, and was returned in `analysis` — while the original
+name was *also* pushed to `uncovered`, because the lowercased strings differ.
+The response then contained the same ingredient in both lists and
+`coverage.analysed + coverage.uncovered` exceeded `coverage.parsed`.
 
-The response then contains the same ingredient in both lists, and
-`coverage.analysed + coverage.uncovered` exceeds `coverage.parsed`
-(`back-end/server.js:355-359`). The UI renders both.
+**Fixed** by attributing every verdict back to the label's own wording before
+anything is counted (`matchVerdictsToNames`,
+`back-end/rag/groundedAnalysis.js:215-244`). The comparison runs over a small
+explicit alias set — the name, the name without its parenthetical, and the
+parenthetical itself (`ingredientKeys`, `:183-196`) — and deliberately does no
+fuzzy or substring matching, because `"sugar"` capturing `"sugar syrup"` would
+attribute a verdict to an ingredient nobody ruled on: the same class of error as
+§10.1. A verdict naming nothing that was asked about, or a second verdict for an
+ingredient already answered, is counted in `droppedRows` rather than in
+coverage.
 
-The robust fix is to stop matching on the model's free-text field at all:
-number the ingredients in the prompt the way the passages are already numbered,
-and have the verdict cite its ingredient by index. The system already
-demonstrates that this works — it is precisely the `C1..Cn` mechanism that makes
-citations checkable, applied to the other axis.
+Numbering the ingredients `I1..In` in the prompt the way the passages are
+numbered — the fix this section originally proposed — was reconsidered and not
+taken. It makes attribution exact only when the model emits the token correctly,
+and converts a rename, today a recoverable mismatch, into a lost verdict and a
+retry. Attribution is done on our side instead, where it is deterministic and
+testable without a provider.
 
-### 10.3 A transient degradation is cached for 48 hours
+`analyzeGrounded` now returns `considered`, and
+`verdicts.length + uncovered.length === considered.length` holds by construction
+on the grounded path; `coverage.reconciled` says so in the payload
+(`back-end/server.js:358-368`). The degraded path answers from a prompt built on
+raw label text rather than on this list, so it reports no reconciliation rather
+than an arithmetic that does not hold.
 
-`back-end/server.js:376-377` stores the result under both keys unconditionally:
+### 10.3 A transient degradation was cached for 48 hours — FIXED
+
+`back-end/server.js` stored the result under both keys unconditionally:
 
 ```js
 cacheManager.set(textKey, result);
 cacheManager.set(imageKey, result);
 ```
 
-`result` carries `grounded` and `degradedReason`
-(`back-end/server.js:352-353`), so an analysis that fell back to the ungrounded
-path — because Groq happened to return something uncitable twice, or the corpus
-had not finished loading — is memoised with `grounded: false` for the cache TTL
-of 48 hours (`back-end/configuration/constants.js:40-41`). Every later request
-for the same photo, or for any photo yielding the same ingredient text, is served
-the unsourced answer from cache, long after the condition that caused it has
-cleared. There is no invalidation path and no admin endpoint; only a restart
-clears it.
+`result` carries `grounded` and `degradedReason`, so an analysis that fell back
+to the ungrounded path — because Groq happened to return something uncitable
+twice, or the corpus had not finished loading — was memoised with
+`grounded: false` for the cache TTL of 48 hours. Every later request for the
+same photo, or for any photo yielding the same ingredient text, was served the
+unsourced answer from cache long after the condition that caused it had
+cleared. There was no invalidation path and no admin endpoint; only a restart
+cleared it. The third write, promoting a text-key hit onto the image key, had
+the same effect one level down.
 
 The degradation is loud in the payload, which is the property DECISIONS.md
-promises and it holds — but "loud" was meant to describe a moment, not a
-two-day state. Not caching a result whose `grounded` is `false` costs one
-re-analysis and removes the whole class.
+promises and it holds — but "loud" was meant to describe a moment, not a two-day
+state.
+
+**Fixed** by giving a degraded result the TTL its honesty earns:
+`CacheManager.setResult` (`back-end/utils/cache.js:75-77`) applies
+`ttlForResult` (`:22-24`), which returns `CACHE_CONFIG.degradedTTL` — 60
+seconds, overridable with `DEGRADED_CACHE_TTL`
+(`back-end/configuration/constants.js:44-58`) — for anything carrying
+`grounded: false`. Not caching it at all would also be correct and would re-run
+OCR, the expensive half of the pipeline, for every retry during an outage; a
+short TTL keeps that protection and caps the staleness at a minute. The policy
+lives in `setResult` rather than at the call sites because there are three of
+them and any one writing through `set()` restores the whole class.
+
+**Reproduced** with a stub answering every prompt with schema-valid verdicts
+that cite nothing (`scripts/stub-llm.js`, `citations: false`): the grounded path
+rejects them twice and raises `GROUNDED_ANALYSIS_FAILED`, the ungrounded path
+accepts them, and the route returns 200 with `grounded: false`. Against the
+pre-fix server the same photo was still being served from cache afterwards with
+no expiry in sight.
