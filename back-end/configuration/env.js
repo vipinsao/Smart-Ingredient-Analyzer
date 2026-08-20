@@ -22,7 +22,57 @@ export const env = {
     process.env.GROQ_BASE_URL || "https://api.groq.com/openai/v1/chat/completions",
   // Optional. When present, Gemini Vision is tried for OCR before Tesseract.
   GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+  // How many reverse proxies sit in front of this process. See parseTrustProxy.
+  TRUST_PROXY: parseTrustProxy(process.env.TRUST_PROXY),
+  // Exact browser origins allowed to call the API, comma separated.
+  CORS_ORIGINS: parseList(process.env.CORS_ORIGINS),
 };
+
+/**
+ * How many proxy hops to trust in X-Forwarded-For, defaulting to NONE.
+ *
+ * This defaults to `false` because getting it wrong is not a subtle
+ * misconfiguration, it disables the rate limiter completely. `trust proxy: 1`
+ * makes Express take an entry from a client-supplied X-Forwarded-For header as
+ * `req.ip` whether or not a proxy actually set it - and this app's own shipped
+ * topology has no proxy in front of it: docker-compose publishes 5000:5000, and
+ * front-end/nginx.conf serves static assets with no proxy_pass, so the browser
+ * calls the API directly.
+ *
+ * Measured against this repo's own configuration (express 4.21.2,
+ * express-rate-limit 8.0.1, /api/analyze budget 20 per 15 minutes), 300
+ * requests from one machine:
+ *
+ *   trust proxy 1, no header        20 allowed, 280 blocked
+ *   trust proxy 1, rotating XFF    300 allowed,   0 blocked
+ *   trust proxy false, rotating XFF 20 allowed, 280 blocked
+ *
+ * express-rate-limit's own validator does not flag `1` - it only errors on
+ * `true` - which is why this survived review. Set TRUST_PROXY=1 when deploying
+ * behind exactly one proxy that overwrites the header (Render, Fly, a load
+ * balancer), and leave it unset anywhere the process is reachable directly.
+ */
+export function parseTrustProxy(raw) {
+  if (raw === undefined || raw === "" || raw === "false") return false;
+  const hops = Number(raw);
+  if (Number.isInteger(hops) && hops >= 0) return hops;
+  // A comma-separated list of trusted proxy addresses is the other safe form.
+  if (raw.includes(".") || raw.includes(":")) return raw.split(",").map((entry) => entry.trim());
+  // "true" trusts every hop, so any client can name its own address. Refused.
+  console.warn(
+    JSON.stringify({
+      level: "warn",
+      message: `TRUST_PROXY=${raw} is not a hop count or an address list; falling back to false`,
+      hint: "Use the number of proxies in front of this process, e.g. TRUST_PROXY=1",
+    })
+  );
+  return false;
+}
+
+function parseList(raw) {
+  if (!raw) return [];
+  return raw.split(",").map((entry) => entry.trim()).filter(Boolean);
+}
 
 /**
  * Report what this process can do, rather than refusing to start.

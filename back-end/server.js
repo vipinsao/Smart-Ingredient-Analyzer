@@ -40,11 +40,17 @@ const PORT = env.PORT;
 
 app.use(helmet());
 
-// Render, Fly and every other PaSS put a proxy in front of the app. Without
-// this every client shares the proxy's IP and the per-IP rate limiter becomes
-// one global bucket. `1` trusts exactly one hop - not `true`, which would let
-// a client spoof its own address via X-Forwarded-For.
-app.set("trust proxy", 1);
+// Defaults to FALSE, and the previous comment here had the reasoning backwards.
+// `trust proxy: 1` does not mean "trust one real proxy"; it means take an entry
+// from X-Forwarded-For as req.ip whether or not a proxy set it. With no proxy
+// in front - which is this repo's own shipped topology, since docker-compose
+// publishes 5000:5000 and front-end/nginx.conf has no proxy_pass - a client
+// rotating that header gets a fresh rate-limit bucket per request. Measured on
+// this config: 300 requests, 300 allowed against a 20-per-15-minute budget.
+//
+// Set TRUST_PROXY=1 when there really is exactly one proxy overwriting the
+// header. See configuration/env.js for the measurement and the accepted values.
+app.set("trust proxy", env.TRUST_PROXY);
 
 app.use(rateLimit({
   windowMs: RATE_LIMIT_CONFIG.windowMs,
@@ -66,20 +72,31 @@ const analyzeLimiter = rateLimit({
   },
 });
 
+// Exact origins only. The production list used to end with /\.vercel\.app$/,
+// which matches any site anybody deploys to Vercel. The API is unauthenticated,
+// so CORS is not protecting data here - but that regex let an attacker's page
+// drive its visitors' browsers into /api/analyze, spending this project's Groq
+// quota and OCR CPU from residential addresses the rate limiter sees as
+// unrelated users. CORS_ORIGINS overrides the list without a code change.
+const PRODUCTION_ORIGINS = [
+  "https://smart-ingredient-analyzer.vercel.app",
+  "https://ai-ingredient-analyzer.vercel.app",
+];
+
+const DEVELOPMENT_ORIGINS = [
+  "http://localhost:8080",   // the nginx container from docker compose
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "http://localhost:4173",
+  "http://127.0.0.1:5173",
+];
+
 const allowedOrigins =
-  env.NODE_ENV === "production"
-    ? [
-        "https://smart-ingredient-analyzer.vercel.app",
-        "https://ai-ingredient-analyzer.vercel.app",
-        /\.vercel\.app$/,
-      ]
-    : [
-        "http://localhost:8080",   // the nginx container from docker compose
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://localhost:4173",
-        "http://127.0.0.1:5173",
-      ];
+  env.CORS_ORIGINS.length > 0
+    ? env.CORS_ORIGINS
+    : env.NODE_ENV === "production"
+      ? PRODUCTION_ORIGINS
+      : DEVELOPMENT_ORIGINS;
 
 app.use(cors({ origin: allowedOrigins, credentials: true }));
 
