@@ -146,6 +146,13 @@ export async function analyzeGrounded(ingredientNames, { retriever, complete, ex
   const chunkOrder = [];
   const seenChunks = new Set();
 
+  // Retrieval and generation are timed apart. They are the two halves of this
+  // function and they are slow for entirely different reasons - one is our own
+  // CPU embedding N ingredient names, the other is a network round trip - so a
+  // single combined number cannot tell you which one to work on.
+  const startedRetrieval = performance.now();
+  let modelMs = 0;
+
   for (const name of names) {
     const outcome = await retriever.retrieve(name, { topK: CHUNKS_PER_INGREDIENT });
 
@@ -166,9 +173,11 @@ export async function analyzeGrounded(ingredientNames, { retriever, complete, ex
     }
   }
 
+  const retrievalMs = Math.round(performance.now() - startedRetrieval);
+
   if (grounded.length === 0) {
     logger.info("grounded analysis abstained for every ingredient", { ingredients: names.length });
-    return { verdicts: [], uncovered, contextChunks: [], attempts: 0, grounded: true };
+    return { verdicts: [], uncovered, contextChunks: [], attempts: 0, grounded: true, retrievalMs, modelMs: 0 };
   }
 
   const { block, byId } = buildContextBlock(chunkOrder);
@@ -185,7 +194,11 @@ export async function analyzeGrounded(ingredientNames, { retriever, complete, ex
         ? basePrompt
         : `${basePrompt}\n\nYour previous answer was rejected: ${lastFailure}. Cite only ids listed above, and omit any ingredient you cannot cite.`;
 
-    const raw = parseJsonArray(await complete(prompt), extractJsonArray);
+    const startedModel = performance.now();
+    const completion = await complete(prompt);
+    modelMs += Math.round(performance.now() - startedModel);
+
+    const raw = parseJsonArray(completion, extractJsonArray);
 
     if (!raw) {
       lastFailure = "the response contained no JSON array";
@@ -239,6 +252,8 @@ export async function analyzeGrounded(ingredientNames, { retriever, complete, ex
       attempts: attempt,
       droppedRows: invalid.length + schemaRejected,
       grounded: true,
+      retrievalMs,
+      modelMs,
     };
   }
 

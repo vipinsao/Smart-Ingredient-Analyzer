@@ -7,7 +7,7 @@ export class OCRService {
   /**
    * @param {Buffer} imageBuffer decoded, already validated image bytes
    * @param {{isMobile?: boolean}} options
-   * @returns {Promise<{text: string, confidence: number, method: string, processingTime: number}>}
+   * @returns {Promise<{text: string, confidence: number, method: string, processingTime: number, preprocessMs: number}>}
    */
   async processImage(imageBuffer, options = {}) {
     const { isMobile = false } = options;
@@ -18,6 +18,7 @@ export class OCRService {
       confidence: result.confidence,
       method: result.method,
       processingTime: result.processingTime,
+      preprocessMs: result.preprocessMs,
     };
   }
 }

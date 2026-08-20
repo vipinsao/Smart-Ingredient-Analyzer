@@ -51,6 +51,8 @@ export async function analyzeIngredients(ingredientsText, { isMobile = false, fa
       droppedRows: result.droppedRows ?? 0,
       ingredientsParsed: names,
       aiTime: Date.now() - startedAt,
+      retrievalMs: result.retrievalMs ?? 0,
+      modelMs: result.modelMs ?? 0,
     };
   } catch (error) {
     const corpusMissing = /corpus|ENOENT|chunks\.json/i.test(error.message || "");
@@ -74,6 +76,10 @@ export async function analyzeIngredients(ingredientsText, { isMobile = false, fa
       droppedRows: fallback.droppedRows ?? 0,
       ingredientsParsed: names,
       aiTime: Date.now() - startedAt,
+      // The degraded path does no retrieval at all, so every millisecond of it
+      // is the provider.
+      retrievalMs: 0,
+      modelMs: fallback.aiTime ?? 0,
     };
   }
 }

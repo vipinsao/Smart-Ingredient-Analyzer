@@ -27,6 +27,7 @@ import AnalysisHelpers from "./utils/helpers.js";
 import ErrorHandler from "./middleware/errorHandler.js";
 import AppError from "./utils/AppError.js";
 import logger from "./utils/logger.js";
+import stopwatch from "./utils/stopwatch.js";
 
 const { geminiOcrEnabled } = validateEnv();
 
@@ -110,7 +111,7 @@ app.get("/health", (req, res) => {
 
 app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
   try {
-    const startTime = Date.now();
+    const timer = stopwatch();
 
     const bodyValidation = Validators.validateRequestBody(req);
     if (!bodyValidation.valid) return res.status(400).json(bodyValidation);
@@ -132,6 +133,8 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
       return res.status(bufferValidation.statusCode || 400).json(bufferValidation);
     }
 
+    timer.mark("decode");
+
     logger.info("analyze request received", {
       requestId: req.id,
       bytes: imageBuffer.length,
@@ -145,11 +148,26 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
     const imageKey = cacheManager.generateImageKey(imageBuffer);
     const cachedByImage = cacheManager.get(imageKey);
     if (cachedByImage) {
-      logger.info("cache hit", { requestId: req.id, on: "image" });
-      return res.json({ ...cachedByImage, cached: true, cacheHit: "image" });
+      timer.mark("cacheLookup");
+      const timings = timer.report();
+      logger.info("cache hit", { requestId: req.id, on: "image", timings });
+      // The cached body carries the timings of the request that produced it.
+      // Serving those unchanged would make a cache hit report seconds of OCR it
+      // never ran, so they are replaced with this request's own.
+      return res.json({
+        ...cachedByImage,
+        cached: true,
+        cacheHit: "image",
+        processingTime: timings.totalMs,
+        timings,
+      });
     }
+    timer.mark("cacheLookup");
 
     const ocrResult = await ocrService.processImage(imageBuffer, { isMobile });
+    timer.mark("ocr");
+    timer.record("ocrPreprocess", ocrResult.preprocessMs);
+    timer.record("ocrRecognise", ocrResult.processingTime);
 
     const ingredientsText = AnalysisHelpers.extractIngredients(ocrResult.text);
     const ingredientsValidation = Validators.validateIngredients(ingredientsText);
@@ -166,15 +184,27 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
       });
     }
 
+    timer.mark("extract");
+
     const textKey = cacheManager.generateKey(ingredientsText);
     const cachedByText = cacheManager.get(textKey);
     if (cachedByText) {
-      logger.info("cache hit", { requestId: req.id, on: "text" });
+      const timings = timer.report();
+      logger.info("cache hit", { requestId: req.id, on: "text", timings });
       cacheManager.set(imageKey, cachedByText);
-      return res.json({ ...cachedByText, cached: true, cacheHit: "text" });
+      return res.json({
+        ...cachedByText,
+        cached: true,
+        cacheHit: "text",
+        processingTime: timings.totalMs,
+        timings,
+      });
     }
 
     const analysisResult = await analyzeIngredients(ingredientsText, { isMobile, fastMode });
+    timer.mark("analyse");
+    timer.record("retrieval", analysisResult.retrievalMs);
+    timer.record("model", analysisResult.modelMs);
 
     // Allergens and the health score are computed here, not asked of the
     // model: same label in, same flags out, every time.
@@ -182,6 +212,7 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
       AnalysisHelpers.detectAllergenDetails(ingredientsText);
     const healthScore = AnalysisHelpers.calculateHealthScore(analysisResult.analysis);
     const harmfulIngredients = AnalysisHelpers.detectHarmfulIngredients(analysisResult.analysis);
+    timer.mark("score");
 
     const result = {
       ingredientsText,
@@ -202,7 +233,8 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
       harmfulIngredients,
       ocrConfidence: ocrResult.confidence,
       ocrMethod: ocrResult.method,
-      processingTime: Date.now() - startTime,
+      processingTime: timer.totalMs,
+      timings: timer.report(),
       aiTime: analysisResult.aiTime,
       llmAttempts: analysisResult.attempts,
       droppedRows: analysisResult.droppedRows,
@@ -216,9 +248,7 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
 
     logger.info("analyze complete", {
       requestId: req.id,
-      totalMs: result.processingTime,
-      ocrMs: ocrResult.processingTime,
-      aiMs: analysisResult.aiTime,
+      timings: result.timings,
       ocrMethod: ocrResult.method,
       grounded: analysisResult.grounded,
       ingredients: analysisResult.analysis.length,

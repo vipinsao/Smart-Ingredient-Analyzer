@@ -216,7 +216,7 @@ export async function performGeminiVisionOCR(imageBuffer) {
 
 /** Tesseract OCR. No key, no network, MIT licensed - the always-available path. */
 export async function performTesseractOCR(imageBuffer) {
-  const startTime = Date.now();
+  const startTime = performance.now();
 
   const result = await Tesseract.recognize(imageBuffer, "eng", {
     logger: () => {},
@@ -240,7 +240,7 @@ export async function performTesseractOCR(imageBuffer) {
     confidence: Math.min(result.data.confidence, validation.confidence),
     method: "tesseract",
     words: result.data.words?.length || 0,
-    processingTime: Date.now() - startTime,
+    processingTime: Math.round(performance.now() - startTime),
     validation,
   };
 }
@@ -254,15 +254,18 @@ export async function performTesseractOCR(imageBuffer) {
  */
 export async function performSmartOCR(imageBuffer, { isMobile = false } = {}) {
   if (process.env.GEMINI_API_KEY) {
+    const startedPreprocess = performance.now();
     try {
       const visionImage = await prepareForVision(imageBuffer, { isMobile });
+      const preprocessMs = Math.round(performance.now() - startedPreprocess);
       const result = await performGeminiVisionOCR(visionImage);
       logger.info("ocr complete", {
         method: result.method,
+        preprocessMs,
         ms: result.processingTime,
         confidence: result.confidence,
       });
-      return result;
+      return { ...result, preprocessMs };
     } catch (error) {
       if (error.code === "NOT_AN_INGREDIENT_LABEL") throw error;
       logger.warn("gemini vision ocr failed, falling back to tesseract", {
@@ -272,14 +275,18 @@ export async function performSmartOCR(imageBuffer, { isMobile = false } = {}) {
     }
   }
 
+  const startedPreprocess = performance.now();
   const ocrImage = await preprocessForOcr(imageBuffer);
+  const preprocessMs = Math.round(performance.now() - startedPreprocess);
+
   const result = await performTesseractOCR(ocrImage);
   logger.info("ocr complete", {
     method: result.method,
+    preprocessMs,
     ms: result.processingTime,
     confidence: result.confidence,
   });
-  return result;
+  return { ...result, preprocessMs };
 }
 
 export default { performSmartOCR, performGeminiVisionOCR, performTesseractOCR, validateIngredientText };
