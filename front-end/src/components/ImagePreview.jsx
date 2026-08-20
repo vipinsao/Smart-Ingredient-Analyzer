@@ -8,7 +8,7 @@ const ImagePreview = ({
   processingState,
   analysisReady,
 }) => {
-  const { isProcessing, status, progress, ocrText } = processingState;
+  const { isProcessing, status, progress, ocrText, startedAt } = processingState;
 
   return (
     <div className="flex flex-col items-center gap-4 sm:gap-6 px-2 max-w-full">
@@ -45,6 +45,7 @@ const ImagePreview = ({
           status={status}
           progress={progress}
           ocrText={ocrText}
+          startedAt={startedAt}
         />
       )}
 

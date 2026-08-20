@@ -69,23 +69,13 @@ export const compressImage = (file, quality = 0.8, maxWidth = 1200) => {
           // Draw image
           ctx.drawImage(img, 0, 0, width, height);
           
-          // Keep original colors - no grayscale conversion
-          // Only apply minimal enhancement if needed
-          const imageData = ctx.getImageData(0, 0, width, height);
-          const data = imageData.data;
-          
-          // Skip image processing to preserve original quality
-          // The original image is already drawn on canvas
-          
-          // Use very high quality for OCR
-          const ocrQuality = Math.max(quality, 0.95); // Minimum 95% quality
+          // Colour and detail are deliberately preserved here. The OCR-specific
+          // transforms (grayscale, contrast normalisation, sharpening) run on
+          // the server in back-end/services/imagePreprocessor.js, where they
+          // can be tuned per OCR engine.
+          const ocrQuality = Math.max(quality, 0.95);
           const compressedDataUrl = canvas.toDataURL('image/jpeg', ocrQuality);
-          
-          // Log compression stats
-          const originalSize = file.length || 0;
-          const compressedSize = compressedDataUrl.length;
-          const compressionRatio = originalSize > 0 ? ((originalSize - compressedSize) / originalSize * 100).toFixed(1) : 0;
-          
+
           console.log(`📊 Image processed: ${width}x${height}, quality=${ocrQuality}`);
           
           resolve(compressedDataUrl);

@@ -98,6 +98,7 @@ const ImageUploader = ({ handleUpload, onBack }) => {
           {/* File input */}
           <input
             type="file"
+            aria-label="Upload a photo of a food label"
             accept="image/jpeg,image/jpg,image/png,image/webp"
             onChange={handleFileSelect}
             disabled={uploading}

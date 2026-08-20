@@ -8,6 +8,10 @@ import AnalysisResult from "./components/AnalysisResult";
 import HowItWorks from "./components/HowItWorks";
 import { compressImage, detectDeviceCapabilities } from "./utils/imageUtils";
 
+// Client-side request budget. Must stay above the backend's worst case
+// (OCR + the model call), or the browser aborts work the server completed.
+const REQUEST_TIMEOUT_MS = 60000;
+
 function App() {
   const webcamRef = useRef(null);
   const [imageSrc, setImageSrc] = useState(null);
@@ -23,6 +27,7 @@ function App() {
     progress: 0,
     ocrText: null,
     analysisPromise: null,
+    startedAt: null,
   });
 
   const [analysisReady, setAnalysisReady] = useState(false);
@@ -35,30 +40,29 @@ function App() {
     console.log('📱 Device capabilities:', capabilities);
   }, []);
 
-  // Get API URL with fallback
+  // Where the API lives. Vite inlines VITE_API_URL at BUILD time, so this is
+  // decided when the bundle is produced, not when the page loads.
+  //
+  // The previous version fell back to http://localhost:5000 in every build. In
+  // a deployed bundle that is a URL the visitor's browser can never reach, so a
+  // missing environment variable showed up as a confusing network error instead
+  // of a configuration error. Localhost is now a development-only default.
   const getApiUrl = useCallback(() => {
-    // Try multiple possible API URLs
-    const possibleUrls = [
-      import.meta.env.VITE_API_URL,
-      import.meta.env.VITE_API,
-      "http://localhost:5000",
-      "http://127.0.0.1:5000",
-      "https://smart-ingredient-analyzer.onrender.com"
-    ];
-    
-    const apiUrl = possibleUrls.find(url => url && url.trim()) || "http://localhost:5000";
-    console.log('🌐 Using API URL:', apiUrl);
-    return apiUrl;
+    const configured = import.meta.env.VITE_API_URL?.trim();
+    if (configured) return configured.replace(/\/$/, "");
+    if (import.meta.env.DEV) return "http://localhost:5000";
+    return null;
   }, []);
 
   // Enhanced background processing function
   const startBackgroundProcessing = useCallback(async (imageData) => {
     setProcessingState({
       isProcessing: true,
-      status: "🔄 Optimizing image...",
+      status: "Optimizing image...",
       progress: 10,
       ocrText: null,
       analysisPromise: null,
+      startedAt: Date.now(),
     });
 
     try {
@@ -73,9 +77,20 @@ function App() {
 
       const API = getApiUrl();
 
-      // Create request with timeout based on device
-      const timeoutMs = settings.isMobile ? 15000 : 20000;
-      
+      if (!API) {
+        const configError = new Error(
+          "This build has no API address configured. Set VITE_API_URL before building the frontend."
+        );
+        configError.userFacing = true;
+        throw configError;
+      }
+
+      // The server's own ceiling is roughly OCR (seconds, and slower on a free
+      // hosting tier) plus a 20s model timeout. The old 15s/20s client budget
+      // was below that, so a request the server answered successfully was
+      // aborted by the browser first and shown to the user as a timeout.
+      const timeoutMs = REQUEST_TIMEOUT_MS;
+
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -117,25 +132,14 @@ function App() {
           errorData
         });
 
-        let userFriendlyMessage = "❌ Analysis failed, please try again.";
-        
-        if (response.status === 413) {
-          userFriendlyMessage = "❌ Image too large. Please try a smaller image.";
-        } else if (response.status === 429) {
-          userFriendlyMessage = "❌ Too many requests. Please wait a moment.";
-        } else if (response.status === 0 || !response.status) {
-          userFriendlyMessage = "❌ Cannot connect to server. Please check if the backend is running.";
-        } else if (errorData.code === "INSUFFICIENT_INGREDIENTS") {
-          userFriendlyMessage = "❌ No ingredient list found. Please focus on the ingredients section.";
-        } else if (errorData.code === "INVALID_IMAGE_DATA") {
-          userFriendlyMessage = "❌ Invalid image format. Please try a different image.";
-        } else if (errorData.code === "OCR_FAILED") {
-          userFriendlyMessage = "❌ Could not read text from image. Please try a clearer photo.";
-        } else if (errorData.code === "GEMINI_API_ERROR") {
-          userFriendlyMessage = "❌ AI analysis failed. Please try again in a moment.";
-        } else if (errorData.code === "QUOTA_EXCEEDED") {
-          userFriendlyMessage = "❌ Service temporarily unavailable. Please try again later.";
-        }
+        // The API answers every typed failure with a message written for a
+        // human ("Point the camera at the ingredients section", "Image is too
+        // large"). Show that instead of re-deriving it from the code here,
+        // which is how the old mapping ended up referring to error codes the
+        // server had stopped sending.
+        const userFriendlyMessage = `❌ ${
+          errorData.error || "Analysis failed, please try again."
+        }`;
 
         setProcessingState(prev => ({
           ...prev,
@@ -179,10 +183,12 @@ function App() {
       console.error("🔴 Background processing error:", error);
 
       let errorMsg = "❌ Could not reach the server. Please check your connection.";
-      
-      if (error.name === 'AbortError') {
-        errorMsg = "❌ Request timed out. Please try with a clearer, smaller image.";
-      } else if (error.message.includes('Failed to fetch')) {
+
+      if (error.userFacing) {
+        errorMsg = `❌ ${error.message}`;
+      } else if (error.name === 'AbortError') {
+        errorMsg = "❌ The analysis took too long. Please try a clearer, smaller image.";
+      } else if (String(error.message).includes('Failed to fetch')) {
         errorMsg = "❌ Network error. Please check your internet connection.";
       }
 
@@ -204,9 +210,12 @@ function App() {
   }, [deviceCapabilities, getApiUrl]);
 
   // Enhanced capture function
-  const captureImage = useCallback(async () => {
+  // WebcamCapture takes the screenshot itself, at an explicit resolution and
+  // quality chosen for OCR, and hands it over. Re-screenshotting here threw
+  // that frame away and grabbed a second one at the component defaults.
+  const captureImage = useCallback(async (capturedImage) => {
     try {
-      const imageSrc = webcamRef.current?.getScreenshot();
+      const imageSrc = capturedImage || webcamRef.current?.getScreenshot();
       if (!imageSrc) {
         setErrorMessage("❌ Could not capture image. Please allow camera access.");
         return;
@@ -307,6 +316,7 @@ function App() {
       progress: 0,
       ocrText: null,
       analysisPromise: null,
+      startedAt: null,
     });
     setErrorMessage(null);
   }, []);
@@ -364,10 +374,14 @@ function App() {
         )}
 
         {errorMessage && (
-          <div className="text-red-600 font-medium text-center bg-red-100 border border-red-300 px-4 py-3 rounded-xl shadow-sm animate-pulse text-sm">
+          <div
+            role="alert"
+            className="text-red-600 font-medium text-center bg-red-100 border border-red-300 px-4 py-3 rounded-xl shadow-sm text-sm"
+          >
             {errorMessage}
             <button 
               onClick={() => setErrorMessage(null)}
+              aria-label="Dismiss error"
               className="ml-3 text-red-800 hover:text-red-900 font-bold"
             >
               ✕
