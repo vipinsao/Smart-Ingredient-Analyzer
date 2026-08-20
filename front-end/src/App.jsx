@@ -37,7 +37,6 @@ function App() {
   useEffect(() => {
     const capabilities = detectDeviceCapabilities();
     setDeviceCapabilities(capabilities);
-    console.log('📱 Device capabilities:', capabilities);
   }, []);
 
   // Where the API lives. Vite inlines VITE_API_URL at BUILD time, so this is
@@ -94,8 +93,6 @@ function App() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-      console.log(`🌐 Making request to: ${API}/api/analyze`);
-      console.log(`📊 Request settings: fastMode=${settings.fastMode}, isMobile=${settings.isMobile}`);
 
       const response = await fetch(`${API}/api/analyze`, {
         method: "POST",
@@ -112,7 +109,6 @@ function App() {
 
       clearTimeout(timeoutId);
 
-      console.log(`📡 Response status: ${response.status}`);
 
       setProcessingState(prev => ({
         ...prev,

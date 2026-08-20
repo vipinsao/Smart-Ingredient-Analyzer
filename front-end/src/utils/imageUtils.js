@@ -30,7 +30,6 @@ export const detectDeviceCapabilities = () => {
 export const compressImage = (file, quality = 0.8, maxWidth = 1200) => {
   return new Promise((resolve, reject) => {
     try {
-      console.log(`🖼️ Starting image compression: quality=${quality}, maxWidth=${maxWidth}`);
       
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
@@ -40,7 +39,6 @@ export const compressImage = (file, quality = 0.8, maxWidth = 1200) => {
         try {
           // Calculate optimal dimensions
           let { width, height } = img;
-          console.log(`📐 Original dimensions: ${width}x${height}`);
           
           // Maintain high resolution for better OCR
           // Only resize if image is very large (over 3000px)
@@ -57,7 +55,6 @@ export const compressImage = (file, quality = 0.8, maxWidth = 1200) => {
             width = minWidth;
           }
           
-          console.log(`📐 Final dimensions: ${width}x${height}`);
           
           canvas.width = width;
           canvas.height = height;
@@ -76,7 +73,6 @@ export const compressImage = (file, quality = 0.8, maxWidth = 1200) => {
           const ocrQuality = Math.max(quality, 0.95);
           const compressedDataUrl = canvas.toDataURL('image/jpeg', ocrQuality);
 
-          console.log(`📊 Image processed: ${width}x${height}, quality=${ocrQuality}`);
           
           resolve(compressedDataUrl);
         } catch (error) {
