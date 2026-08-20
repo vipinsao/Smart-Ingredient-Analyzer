@@ -24,28 +24,38 @@ export const env = {
   GEMINI_API_KEY: process.env.GEMINI_API_KEY,
 };
 
-const REQUIRED = ["GROQ_API_KEY"];
-
 /**
- * Fail fast, and name every missing variable at once rather than one per
- * restart.
+ * Report what this process can do, rather than refusing to start.
+ *
+ * GROQ_API_KEY used to be required at boot, and the process exited without it.
+ * That was the wrong boundary: OCR, the corpus, hybrid retrieval, abstention,
+ * citation checking, the allergen table and the health score all run with no
+ * key at all, and /health - which the README tells a reader to curl first - was
+ * unreachable without a Groq account. Someone evaluating this repo had to forge
+ * a fake key to see any of it.
+ *
+ * The key is now checked where it is used. Without it every other stage runs
+ * and only the generation call fails, with a typed error that names what is
+ * missing.
  */
 export function validateEnv() {
-  const missing = REQUIRED.filter((key) => !env[key] || String(env[key]).trim() === "");
+  const generationEnabled = Boolean(env.GROQ_API_KEY && String(env.GROQ_API_KEY).trim() !== "");
 
-  if (missing.length > 0) {
-    console.error(
+  if (!generationEnabled) {
+    console.warn(
       JSON.stringify({
-        level: "error",
-        message: "Missing required environment variables",
-        missing,
-        hint: "Copy back-end/.env.example to back-end/.env and fill it in.",
+        level: "warn",
+        message: "GROQ_API_KEY is not set: OCR and retrieval will run, ingredient verdicts will not",
+        hint: "Copy back-end/.env.example to back-end/.env and add a free key from https://console.groq.com/keys",
       })
     );
-    process.exit(1);
   }
 
-  return { ok: true, geminiOcrEnabled: Boolean(env.GEMINI_API_KEY) };
+  return {
+    ok: true,
+    generationEnabled,
+    geminiOcrEnabled: Boolean(env.GEMINI_API_KEY),
+  };
 }
 
 export default env;

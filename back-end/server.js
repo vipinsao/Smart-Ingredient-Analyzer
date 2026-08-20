@@ -31,7 +31,7 @@ import AppError from "./utils/AppError.js";
 import logger from "./utils/logger.js";
 import stopwatch from "./utils/stopwatch.js";
 
-const { geminiOcrEnabled } = validateEnv();
+const { geminiOcrEnabled, generationEnabled } = validateEnv();
 
 const app = express();
 const PORT = env.PORT;
@@ -120,6 +120,9 @@ app.get("/health", (req, res) => {
     uptimeMs: Math.round(process.uptime() * 1000),
     ocr: geminiOcrEnabled ? "gemini-vision + tesseract" : "tesseract",
     model: env.GROQ_MODEL,
+    // Says plainly which half of the pipeline is available. Without a key, OCR
+    // and retrieval still work and only the verdicts fail.
+    generation: generationEnabled ? "configured" : "disabled (no GROQ_API_KEY)",
     warmup: { ...warmupState, ocrPool: ocrPoolStats() },
     corpus,
   });
@@ -367,6 +370,7 @@ app.listen(PORT, () => {
     env: env.NODE_ENV,
     model: env.GROQ_MODEL,
     geminiOcr: geminiOcrEnabled,
+    generation: generationEnabled,
   });
   warmUp();
 });

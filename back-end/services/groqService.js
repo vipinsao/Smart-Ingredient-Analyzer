@@ -160,6 +160,20 @@ Expected JSON format:
 
   /** One HTTP call to Groq. Returns the assistant message content. */
   async requestCompletion(prompt, maxTokens, timeoutMs) {
+    // Checked here rather than at boot. Everything upstream of this line - OCR,
+    // the corpus, retrieval, abstention - needs no key and now runs without
+    // one, so a missing key costs the verdicts and nothing else.
+    if (!this.apiKey || String(this.apiKey).trim() === "") {
+      throw new AppError(
+        "Ingredient verdicts need a GROQ_API_KEY. OCR and retrieval ran; generation did not.",
+        {
+          code: "GENERATION_NOT_CONFIGURED",
+          statusCode: 503,
+          details: "Set GROQ_API_KEY in back-end/.env - a free key from https://console.groq.com/keys",
+        }
+      );
+    }
+
     let response;
     try {
       response = await fetch(this.baseUrl, {

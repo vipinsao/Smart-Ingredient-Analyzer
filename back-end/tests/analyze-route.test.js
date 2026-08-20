@@ -52,7 +52,7 @@ async function waitForHealth(port, deadlineMs = 60000) {
   }
 }
 
-async function withServer(run) {
+async function withServer(run, { apiKey = "stub-key-not-used" } = {}) {
   const stub = createStubServer();
   await new Promise((resolve) => stub.listen(0, "127.0.0.1", resolve));
   const stubPort = stub.address().port;
@@ -64,7 +64,7 @@ async function withServer(run) {
       PORT: String(port),
       NODE_ENV: "development",
       LOG_LEVEL: "error",
-      GROQ_API_KEY: "stub-key-not-used",
+      GROQ_API_KEY: apiKey,
       GROQ_BASE_URL: `http://127.0.0.1:${stubPort}/v1/chat/completions`,
       GEMINI_API_KEY: "",
     },
@@ -129,6 +129,24 @@ test("a repeat of the same image is served from cache without running OCR", { ti
     // Same answer, though.
     assert.equal(second.payload.ingredientsText, first.payload.ingredientsText);
   });
+});
+
+test("without a Groq key the server still boots, still reads the label, and fails only generation", { timeout: 180000 }, async () => {
+  await withServer(async ({ port }) => {
+    const health = await waitForHealth(port);
+    // Boots, rather than exiting the process the way it used to. Everything up
+    // to generation needs no key, and someone evaluating this repo should not
+    // have to open a Groq account to watch OCR and retrieval work.
+    assert.equal(health.status, "OK");
+    assert.match(health.generation, /disabled/);
+
+    const { status, payload } = await analyze(port, "no-key");
+
+    assert.equal(status, 503);
+    assert.equal(payload.code, "GENERATION_NOT_CONFIGURED");
+    // The failure names what is missing rather than being a generic 500.
+    assert.match(payload.error, /GROQ_API_KEY/);
+  }, { apiKey: "" });
 });
 
 test("/health answers before warm-up has finished, and reports what is ready", { timeout: 180000 }, async () => {

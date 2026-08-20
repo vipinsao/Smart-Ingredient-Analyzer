@@ -8,6 +8,7 @@
 // a cold cache and the model is ~90MB in memory; building one per call would
 // be untenable.
 import { pipeline, env } from "@huggingface/transformers";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -21,6 +22,19 @@ let extractorPromise = null;
 
 export function getExtractor() {
   if (!extractorPromise) {
+    // Say so before the stall, not after. On a cold cache this call downloads
+    // ~87MB with no output of its own, and the command that triggers it is one
+    // the README tells a first-time reader to run - so an unexplained
+    // multi-minute pause looks like a hang rather than a download.
+    if (!fs.existsSync(path.join(env.cacheDir, EMBEDDING_MODEL))) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          message: `downloading the embedding model (${EMBEDDING_MODEL}, ~87MB) - once, then cached on disk`,
+          cacheDir: env.cacheDir,
+        })
+      );
+    }
     extractorPromise = pipeline("feature-extraction", EMBEDDING_MODEL);
   }
   return extractorPromise;
