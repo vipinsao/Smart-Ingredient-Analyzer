@@ -1,66 +1,57 @@
-// Test script to validate the backend with the provided image
-import fs from 'fs';
-import fetch from 'node-fetch';
-import sharp from 'sharp';
+// scripts/smoke-analyze.js - End-to-end check against a running API.
+//
+// Posts a real food-label photo to /api/analyze and prints what comes back.
+//
+//   node scripts/smoke-analyze.js [imagePath] [apiUrl]
+//
+// Defaults to the sample label in the repo and http://localhost:5000.
+//
+// The previous version of this script generated a blank white JPEG, which by
+// definition contains no ingredient list, so it could only ever print the
+// "no ingredients found" error. It also lived at the repo root, where its
+// `node-fetch` and `sharp` imports had no package.json to resolve against.
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-// Test the backend with a sample image
-async function testBackend() {
-  try {
-    console.log('🧪 Testing backend with food label image...');
-    
-    // For testing purposes, we'll create a mock base64 image
-    // In real usage, this would come from the frontend
-    const testImagePath = './test-sample.jpg';
-    
-    // Create a simple test image if it doesn't exist
-    if (!fs.existsSync(testImagePath)) {
-      console.log('📝 Creating test image...');
-      await sharp({
-        create: {
-          width: 800,
-          height: 600,
-          channels: 3,
-          background: { r: 255, g: 255, b: 255 }
-        }
-      })
-      .jpeg()
-      .toFile(testImagePath);
-    }
-    
-    // Read and convert to base64
-    const imageBuffer = fs.readFileSync(testImagePath);
-    const base64Image = `data:image/jpeg;base64,${imageBuffer.toString('base64')}`;
-    
-    console.log(`📊 Test image size: ${(imageBuffer.length / 1024).toFixed(1)}KB`);
-    
-    // Test the API endpoint
-    const response = await fetch('http://localhost:5000/api/analyze', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        image: base64Image,
-        fastMode: true,
-        isMobile: false
-      })
-    });
-    
-    console.log(`📡 Response status: ${response.status}`);
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('❌ Error response:', errorText);
-      return;
-    }
-    
-    const result = await response.json();
-    console.log('✅ Success! Response:', JSON.stringify(result, null, 2));
-    
-  } catch (error) {
-    console.error('❌ Test failed:', error.message);
-  }
+const here = path.dirname(fileURLToPath(import.meta.url));
+
+const imagePath =
+  process.argv[2] || path.join(here, "..", "..", "front-end", "public", "ingredient.jpeg");
+const apiUrl = (process.argv[3] || process.env.API_URL || "http://localhost:5000").replace(/\/$/, "");
+
+if (!fs.existsSync(imagePath)) {
+  console.error(`No such image: ${imagePath}`);
+  process.exit(1);
 }
 
-// Run the test
-testBackend();
+const buffer = fs.readFileSync(imagePath);
+console.log(`posting ${path.basename(imagePath)} (${(buffer.length / 1024).toFixed(1)}KB) to ${apiUrl}/api/analyze`);
+
+const started = Date.now();
+const response = await fetch(`${apiUrl}/api/analyze`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({
+    image: `data:image/jpeg;base64,${buffer.toString("base64")}`,
+    fastMode: true,
+    isMobile: false,
+  }),
+});
+
+const body = await response.json();
+console.log(`HTTP ${response.status} in ${Date.now() - started}ms`);
+
+if (!response.ok) {
+  console.error(body);
+  process.exit(1);
+}
+
+console.log(`ocr:        ${body.ocrMethod} (confidence ${body.ocrConfidence})`);
+console.log(`text:       ${body.ingredientsText}`);
+console.log(`score:      ${body.healthScore.score}/100`, body.healthScore.breakdown);
+console.log(`allergens:  ${body.allergens.length ? body.allergens.join(", ") : "none detected"}`);
+console.log(`verdicts:   ${body.analysis.length} ingredients (${body.llmAttempts} model attempt(s))`);
+for (const row of body.analysis) {
+  console.log(`  [${row.status.padEnd(7)}] ${row.ingredient}`);
+}
