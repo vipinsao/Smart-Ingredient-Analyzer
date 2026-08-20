@@ -364,7 +364,7 @@ npm run lint && npm run build
 ```
 
 `npm run ocr:benchmark` on the sample label committed in this repo reports
-Tesseract's own confidence rising from **57 to 67** with pre-processing, and the
+Tesseract's own confidence rising from **54 to 65** with pre-processing, and the
 additive codes `INS1422` and `INS415` being read correctly instead of as
 `NS1422` and `S415`. That is one image on one machine, not a benchmark — rerun
 it on your own photos.
