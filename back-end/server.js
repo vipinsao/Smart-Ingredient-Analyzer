@@ -19,8 +19,9 @@ import {
 } from "./configuration/constants.js";
 
 import ocrService from "./services/ocrService.js";
-import { terminateOcrPool } from "./services/ocrPool.js";
-import { getRetriever } from "./rag/retriever.js";
+import { warmOcrPool, terminateOcrPool, ocrPoolStats } from "./services/ocrPool.js";
+import { getRetriever, isRetrieverLoaded, readCorpusMeta } from "./rag/retriever.js";
+import { getExtractor } from "./rag/embedder.js";
 import { analyzeIngredients } from "./services/analysisService.js";
 import cacheManager from "./utils/cache.js";
 import Validators from "./utils/validators.js";
@@ -92,11 +93,23 @@ app.use((req, res, next) => {
 
 // ============= ROUTES =============
 
+// Deliberately cheap. This endpoint is what the hosting platform polls to
+// decide whether the container is alive, so it must answer while the heavy
+// initialisation started at boot is still running - a probe that times out
+// waiting for warm-up restarts the container it is waiting for, forever. It
+// reports readiness rather than blocking on it.
 app.get("/health", (req, res) => {
   let corpus = null;
   try {
-    const { meta } = getRetriever();
-    corpus = { chunks: meta.chunks, model: meta.model, builtAt: meta.builtAt };
+    // meta.json only: a few hundred bytes, not the 1.3MB corpus and not the
+    // BM25 index build. `loaded` says whether the real thing is in memory yet.
+    const meta = readCorpusMeta();
+    corpus = {
+      chunks: meta.chunks,
+      model: meta.model,
+      builtAt: meta.builtAt,
+      loaded: isRetrieverLoaded(),
+    };
   } catch (error) {
     corpus = { error: error.message };
   }
@@ -104,8 +117,10 @@ app.get("/health", (req, res) => {
   res.json({
     status: "OK",
     timestamp: new Date().toISOString(),
+    uptimeMs: Math.round(process.uptime() * 1000),
     ocr: geminiOcrEnabled ? "gemini-vision + tesseract" : "tesseract",
     model: env.GROQ_MODEL,
+    warmup: { ...warmupState, ocrPool: ocrPoolStats() },
     corpus,
   });
 });
@@ -312,6 +327,40 @@ async function shutdown(signal) {
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 
+/**
+ * Work the first request would otherwise pay for, moved to boot.
+ *
+ * Started after listen(), never awaited before it: the Tesseract worker, the
+ * ONNX embedding session and the corpus are between them the several seconds a
+ * cold instance used to charge to whoever arrived first. Failures here are
+ * logged, not fatal - each of these paths still initialises lazily on demand,
+ * so a warm-up that fails costs latency, not availability.
+ */
+const warmupState = { ocrPool: null, corpus: false, embedder: false };
+
+function warmUp() {
+  const started = performance.now();
+
+  const tasks = [
+    warmOcrPool()
+      .then(() => { warmupState.ocrPool = "ready"; })
+      .catch((error) => {
+        warmupState.ocrPool = "failed";
+        logger.warn("ocr pool warm-up failed", { reason: error?.message });
+      }),
+    Promise.resolve()
+      .then(() => { getRetriever(); warmupState.corpus = true; })
+      .catch((error) => logger.warn("corpus warm-up failed", { reason: error?.message })),
+    getExtractor()
+      .then(() => { warmupState.embedder = true; })
+      .catch((error) => logger.warn("embedder warm-up failed", { reason: error?.message })),
+  ];
+
+  Promise.all(tasks).then(() => {
+    logger.info("warm-up complete", { ms: Math.round(performance.now() - started), ...warmupState });
+  });
+}
+
 app.listen(PORT, () => {
   logger.info("server listening", {
     port: PORT,
@@ -319,6 +368,7 @@ app.listen(PORT, () => {
     model: env.GROQ_MODEL,
     geminiOcr: geminiOcrEnabled,
   });
+  warmUp();
 });
 
 export default app;

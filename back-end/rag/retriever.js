@@ -167,4 +167,30 @@ export function getRetriever() {
   return shared;
 }
 
-export default { Retriever, getRetriever, ABSTAIN_MIN_COSINE, ABSTAIN_MIN_LEXICAL, DENSE_FUSION_WEIGHT };
+/** Has the corpus already been loaded? Lets /health answer without loading it. */
+export function isRetrieverLoaded() {
+  return shared !== null;
+}
+
+/**
+ * Corpus provenance without paying for the corpus.
+ *
+ * meta.json is a few hundred bytes. chunks.json plus the embeddings is ~1.3MB
+ * and building the BM25 index over them is real CPU, so a health check that
+ * wanted three fields for its response body was doing the whole load - on the
+ * cold container, on the platform's probe, before any user had asked for
+ * anything.
+ */
+export function readCorpusMeta(directory = corpusDir) {
+  return JSON.parse(fs.readFileSync(path.join(directory, "meta.json"), "utf8"));
+}
+
+export default {
+  Retriever,
+  getRetriever,
+  isRetrieverLoaded,
+  readCorpusMeta,
+  ABSTAIN_MIN_COSINE,
+  ABSTAIN_MIN_LEXICAL,
+  DENSE_FUSION_WEIGHT,
+};
