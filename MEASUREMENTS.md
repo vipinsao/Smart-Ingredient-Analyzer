@@ -205,12 +205,57 @@ by tests in `back-end/tests/`.
 Nothing in `OCR_PREPROCESS` changed as a result of this work. The benchmark
 that says why is committed.
 
+## What the instrumentation costs
+
+`npm run bench:telemetry`, 300 image-cache-hit requests per configuration, on
+this machine (i5-9300H, WSL2, Node 24). That path on purpose: a full analysis is
+~2.7s of which ~78% is Tesseract and which varies by more than a second between
+identical warm requests, so no instrumentation cost is resolvable there. A cache
+hit is ~1.5ms of server time inside a ~7ms round trip and still runs the whole
+HTTP layer, the request span, the validate span and two metric records.
+
+| configuration | p50 | p95 | mean |
+| --- | --- | --- | --- |
+| off (`OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none`) | 6.831ms | 12.067ms | 7.188ms |
+| console (the shipped default) | 7.033ms | 15.111ms | 7.731ms |
+| console, 1s metric export interval | 7.147ms | 11.791ms | 7.382ms |
+
+**+0.202ms at p50** against the uninstrumented floor.
+
+Same-session `npm run profile 3 8`, telemetry off then on:
+
+| | off | on (console) |
+| --- | --- | --- |
+| cold first request, total median | 2294.9ms | 2285.1ms |
+| warm request, total median | 1986.1ms | 1790.0ms |
+| boot to a healthy `/health` | 388–430ms | 424–483ms |
+
+The request-path differences run the wrong way, which is the point: they are
+this machine's variance, not the change. The only repeatable cost is boot,
+roughly +40 to +50ms of SDK module loading, paid once — and `/health` answers
+during warm-up by design, so it does not delay readiness.
+
+---
+
 ## Not measured
 
 **Citation validity, groundedness and abstention-after-generation are
-implemented and unit-tested against a stubbed model, but were not measured
-against a live model, because no Groq API key was available when this was
-written.** `npm run eval` covers everything up to the model call. To measure
-the generation half, set `GROQ_API_KEY` and extend
-`rag/eval/run-eval.js`; the harness's structure is there, the numbers are not.
-Nothing in this README claims otherwise.
+implemented and unit-tested against fixtures, but have NOT been measured
+against a live model, because no Groq API key was available.** `npm run eval`
+covers everything up to the model call.
+
+The harness that would measure the rest now exists:
+
+```bash
+cd back-end && GROQ_API_KEY=... npm run eval:generation
+```
+
+It has been run end to end against `scripts/stub-llm.js` — 58 questions, no key,
+no network — which proves the code executes and that the five out-of-corpus
+questions it sees are the same five `npm run eval` names. Those figures describe
+the stub, not a model, and are recorded nowhere:
+`rag/eval/generation-results.json` is gitignored so that a stub run cannot be
+mistaken for a measured one.
+
+**No generation numbers appear in this repository, and none are estimated.**
+Run the command above with a key and you will have the first ones.

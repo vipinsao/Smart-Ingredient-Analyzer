@@ -28,8 +28,16 @@ table, and not what the design was hoping for. The reading, the three questions
 where dense retrieval still earns its keep, and the one where the fusion throws
 that win away, are under [Measured results](#measured-results).
 
-`cd back-end && npm test` runs 86 unit tests on the same terms: no key, no
+`cd back-end && npm test` runs 99 unit tests on the same terms: no key, no
 network, about 35 seconds.
+
+**What that command does not measure is the generation half**, and that is still
+true. `npm run eval:generation` scores citation validity, groundedness,
+post-generation abstention and per-query tokens over the same labelled set —
+but it needs a `GROQ_API_KEY`, none was available here, and **no generation
+numbers have been produced**. Without a key it prints what it would have
+measured and exits 0. See [Measuring the generation
+half](#measuring-the-generation-half).
 
 ## Pipeline
 
@@ -146,8 +154,10 @@ call — was wrong: measurement put it at 14%, and pooling helped for a differen
 reason than the one written down. What I could not measure is the generation
 half: citation validity and groundedness are unit-tested against a stubbed
 model and have never been run against a live one, because no API key was
-available. That is stated wherever it is relevant rather than left for you to
-find.
+available. The harness that would run them now exists — `npm run
+eval:generation` — and has been exercised end to end against a local stub, but
+the numbers it would print have not been produced. That is stated wherever it
+is relevant rather than left for you to find.
 
 ## Why retrieval, and not just a prompt
 
@@ -269,6 +279,119 @@ but the retrieval-level failure is real and unfixed.
 isomalt passage. That was wrong — the harness now prints the passage rather than
 leaving it to be remembered, and it is the *Sweetener* class chunk.)
 
+## Measuring the generation half
+
+**No generation numbers exist yet.** Everything above stops at the model call.
+Citation validity, groundedness and post-generation abstention are implemented,
+unit-tested against fixtures, and have never been run against a live model,
+because no `GROQ_API_KEY` was available. Nothing below is a measurement; it is a
+description of the command that would produce one.
+
+```bash
+cd back-end
+npm run eval:generation                 # deterministic scoring
+npm run eval:generation -- --judge      # add the LLM-as-judge pass
+npm run eval:generation -- --limit 10   # a cheap smoke run
+```
+
+Without a key it prints what it would have measured and exits 0 — it runs in CI
+on exactly those terms, because an optional measurement must never turn a build
+red for want of a secret.
+
+It drives the same 58 labelled questions, the application's own prompt builder,
+its retry wording, its Zod schema and its citation validator. It issues the
+model call itself rather than going through `analyzeGrounded`, because that
+function's job is to drop the uncitable rows and this harness's job is to count
+them. One question per prompt, where a real request batches a label's
+ingredients into one — so these numbers, when they exist, will not describe a
+24-passage prompt.
+
+| metric | how it is scored |
+| --- | --- |
+| citation validity | **Exact.** Every cited id either was in the prompt or was not. Counted per verdict and per citation. |
+| unsupported numerals | **Exact.** A quantity a verdict asserts that appears in none of its cited passages is an invented figure. |
+| lexical support | **A proxy, and labelled one.** Content-word overlap between the claim and its cited passages. |
+| LLM-as-judge | **Optional, and compromised.** See below. |
+| post-generation abstention | On the five out-of-corpus questions retrieval lets through, does generation still decline? |
+| cost and latency | The provider's own `usage` token counts and wall time. Absent, never estimated, when the endpoint reports none. |
+
+`lexical support` will mark a correct paraphrase unsupported and a negated claim
+supported. That is why the harness prints the whole ratio distribution and not
+just a count, and why 0.6 is called a reporting convention rather than a
+threshold: there is no human-labelled set for this corpus to calibrate one
+against.
+
+The judge is off by default and, when on, is **the same model that wrote the
+claims it is judging** — a self-preference bias that is not corrected for, and
+its own accuracy is unmeasured for the same want of human labels. The reasoning
+about when LLM-as-judge is worth anything at all is in
+[DECISIONS.md](./DECISIONS.md#measuring-generation-what-is-exact-what-is-a-proxy-and-when-a-judge-is-worth-having).
+
+The harness itself has been run end to end against `scripts/stub-llm.js`, with
+no key and no network, over all 58 questions. That proves the code executes and
+that the five out-of-corpus questions it sees are the same five `npm run eval`
+names. **It measures the stub, so its output is not recorded anywhere** —
+`rag/eval/generation-results.json` is gitignored precisely so a stub run cannot
+be mistaken for a measured one.
+
+---
+
+## Observability
+
+The pipeline is traced with [OpenTelemetry](https://opentelemetry.io/)
+(Apache-2.0), exporting **to the console by default** — no collector, no
+account, nothing to pay for.
+
+```bash
+# traces and metrics on stdout, which is the default
+cd back-end && npm start
+
+# to a collector instead
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 npm start
+
+# off
+OTEL_TRACES_EXPORTER=none OTEL_METRICS_EXPORTER=none npm start
+```
+
+One trace per request: a server span with children for `analyze.validate`,
+`ocr.preprocess`, `ocr.recognise`, `rag.retrieve` (each parenting its own
+`rag.embed`) and `llm.generate`. The performance work measured those stages once
+by hand; this is the same breakdown, continuously, per request — so "that one
+took nine seconds" is answerable after the fact instead of reproducible only in
+a profiler.
+
+Six metrics and no more: request duration by route and outcome, cache lookups by
+result, retrieval duration, OCR rejections by reason, provider tokens by kind,
+and OCR queue depth as an observable gauge.
+
+Every log line written inside a span carries `traceId` and `spanId`, and both
+`x-request-id` and `x-trace-id` come back on the response.
+
+**Instrumentation is manual, not `@opentelemetry/auto-instrumentations-node`,**
+and the reasoning is in
+[DECISIONS.md](./DECISIONS.md#the-instrumentation-is-hand-written-and-there-are-six-metrics)
+and at the top of `back-end/telemetry.js`.
+
+**What it costs**, from `npm run bench:telemetry`, 300 image-cache-hit requests
+(that path deliberately: a full analysis is ~2.7s of mostly Tesseract and varies
+by more than a second between identical requests, so nothing is resolvable
+there):
+
+| configuration | p50 | p95 | mean |
+| --- | --- | --- | --- |
+| off | 6.831ms | 12.067ms | 7.188ms |
+| console (default) | 7.033ms | 15.111ms | 7.731ms |
+| console, 1s metric interval | 7.147ms | 11.791ms | 7.382ms |
+
+**+0.202ms at p50** against the uninstrumented floor, on the cheapest request
+this service serves. Same-session `npm run profile` with telemetry off and on:
+cold total median 2294.9ms → 2285.1ms, warm 1986.1ms → 1790.0ms — both
+differences are the machine, not the change. The one repeatable cost is boot:
+388–430ms → 424–483ms, which is loading the SDK, paid once, while `/health`
+already answers during warm-up by design.
+
+---
+
 ## Setup
 
 Prerequisites: Node.js 20 or newer. **No account of any kind is needed to see
@@ -343,7 +466,12 @@ Frontend on http://localhost:8080, API on http://localhost:5000.
 | `GEMINI_API_KEY` | back-end | no | Enables Gemini Vision OCR ahead of Tesseract. |
 | `PORT` | back-end | no | Defaults to 5000. |
 | `NODE_ENV` | back-end | no | Selects the CORS origin list and error verbosity. |
-| `LOG_LEVEL` | back-end | no | `error`/`warn`/`info`/`debug`. Logs are JSON lines. |
+| `LOG_LEVEL` | back-end | no | `error`/`warn`/`info`/`debug`. Logs are JSON lines, and carry `traceId` when a span is active. |
+| `OTEL_TRACES_EXPORTER` | back-end | no | `console` (default), `otlp`, or `none`. |
+| `OTEL_METRICS_EXPORTER` | back-end | no | `console` (default), `otlp`, or `none`. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | back-end | no | e.g. `http://localhost:4318`. Setting it switches both exporters to OTLP. |
+| `OTEL_METRIC_EXPORT_INTERVAL` | back-end | no | Milliseconds between metric exports. Defaults to 60000. |
+| `OTEL_SERVICE_NAME` | back-end | no | Defaults to `smart-ingredient-analyzer`. |
 | `VITE_API_URL` | front-end | at build time | Base URL of the API, no trailing slash. |
 
 ---
@@ -352,8 +480,9 @@ Frontend on http://localhost:8080, API on http://localhost:5000.
 
 ```bash
 cd back-end
-npm test              # 86 tests, no API key, no network
+npm test              # 99 tests, no API key, no network
 npm run eval          # retrieval evaluation + ablation, reproduces every table above
+npm run eval:generation   # generation evaluation - NEEDS GROQ_API_KEY, skips cleanly without one
 npm run ingest        # rebuild the corpus from the live taxonomies
 npm run ocr:benchmark # OCR with and without pre-processing, side by side
 npm run smoke         # post the sample label to a running API
@@ -364,6 +493,7 @@ npm run loadtest      # throughput and p50/p95 at rising concurrency
 npm run bench:ocr     # Tesseract worker startup vs recognition
 npm run bench:preprocess  # what each pre-processing setting costs and buys
 npm run bench:bounds  # what an upload can make the server do
+npm run bench:telemetry   # what the OpenTelemetry instrumentation costs
 
 cd ../front-end
 npm run lint && npm run build
@@ -455,12 +585,24 @@ argued in [DECISIONS.md](./DECISIONS.md).
   build in CI, nothing more.
 - **The Docker setup has not been executed** in the environment where it was
   written; the Node and Vite builds it wraps have been.
-- **The generation half is not measured.** Citation validity, groundedness and
-  abstention-after-generation are implemented and unit-tested against a stubbed
-  model, but were never run against a live one, because no Groq API key was
-  available when this was written. `npm run eval` covers everything up to the
-  model call and nothing past it. See
+- **The generation half is still not measured.** Citation validity,
+  groundedness and abstention-after-generation are implemented and unit-tested
+  against fixtures, but have never been run against a live model, because no
+  Groq API key was available. The harness exists and skips cleanly without a
+  key — `npm run eval:generation` — and it has been exercised end to end against
+  a local stub, but **no generation numbers have been produced and none are
+  estimated anywhere in this repository**. See [Measuring the generation
+  half](#measuring-the-generation-half) and
   [Not measured](./MEASUREMENTS.md#not-measured).
+- **The groundedness metric is a proxy, and the judge is compromised.** Lexical
+  overlap marks a correct paraphrase unsupported and a negated claim supported;
+  the optional LLM judge is the same model that wrote the claims, and its own
+  accuracy is unmeasured. Both limits are printed by the command that produces
+  the numbers, not only written here.
+- **Telemetry is on by default and writes to stdout.** That is the right default
+  for a repository somebody is evaluating and the wrong one for a container with
+  a log budget. Point it at a collector with `OTEL_EXPORTER_OTLP_ENDPOINT`, or
+  turn it off with `OTEL_TRACES_EXPORTER=none`.
 - **There is no live demo link, on purpose.** The deployment that used to be
   linked runs the pre-retrieval build — its `/health` returns two fields where
   this code returns six, and it answers whole foods with bare Good/Bad/Neutral

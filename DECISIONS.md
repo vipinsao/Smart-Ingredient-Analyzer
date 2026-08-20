@@ -450,3 +450,145 @@ that could never fire.
 The frontend now shows the server's own message rather than re-deriving one from
 the error code, which is how that mapping drifted into referring to codes the
 server had stopped sending.
+
+---
+
+## Measuring generation: what is exact, what is a proxy, and when a judge is worth having
+
+Retrieval is easy to score. A labelled question either got its passage back or
+it did not, and `npm run eval` says so 58 times. Generation is not, and the
+temptation is to produce a number anyway.
+
+So the generation harness sorts its metrics into three kinds and says which is
+which, in the code, in the output, and here.
+
+**Exact.** *Citation validity*: every id a verdict cites either appeared in the
+prompt or it did not. There is no judgement in it. It is counted twice — per
+verdict, which is what a user experiences (this answer is or is not
+attributable), and per citation, which is what the model's behaviour looks like
+(how often it reaches for an id that does not exist). *Unsupported numerals*:
+every standalone number in a verdict's stated reason that appears in none of its
+cited passages. This corpus is full of quantities — acceptable daily intakes, E
+numbers, percentages — and a verdict asserting "an ADI of 40 mg/kg" against
+passages containing no 40 has invented the figure whatever else is true of it.
+That check is string comparison and gives the same answer every time.
+
+**A proxy, and never presented as more.** *Lexical support*: the fraction of a
+claim's content words that also occur in the passages it cites. It is here
+because it is deterministic, free, needs no second model, and catches the
+failure that matters most in a food-safety tool — a verdict whose reason shares
+almost no vocabulary with the passage it names as its source. It has two failure
+modes and both are written where it is defined: a correct paraphrase ("stops
+mould" for "antifungal agent") scores low and is not wrong, and a negated claim
+("EFSA did not assess this") scores near 1.0 against a passage saying the
+opposite, and is wrong. So the harness prints the whole ratio distribution and
+not just a count above a line, and the 0.6 line is called a reporting convention
+rather than a threshold. Calibrating a threshold needs a set of verdicts a human
+has labelled grounded or ungrounded. No such set exists for this corpus, so
+there is nothing to calibrate against and pretending otherwise would be the
+whole problem in miniature.
+
+**Optional, and compromised.** *LLM-as-judge*, off unless `--judge` is passed.
+
+The case for it: attribution against a supplied passage is about the easiest
+thing a judge can be asked. The passage is in the prompt, the claim is one
+sentence, the answer space is three tokens, and no world knowledge is required —
+this is the shape of judging task with the best published agreement with human
+raters. It also catches exactly what the lexical proxy cannot: paraphrase and
+negation.
+
+The case against it, which is not small and is printed every time the judge
+runs. The judge here is `openai/gpt-oss-120b`, the same model that wrote the
+claims, and models score their own output higher than other models' — a
+self-preference bias this makes no attempt to correct. Worse, the judge's own
+accuracy is unmeasured, for the same reason the lexical threshold is
+uncalibrated: there are no human labels. An unvalidated judge produces a number
+with an unknown error bar, and a number with an unknown error bar reported to
+two significant figures is how a metric becomes a lie.
+
+The rule this settles on: **an LLM judge is worth having when the task is closed
+(the evidence is in the prompt), the answer space is small, the judge is a
+different model from the generator, and its agreement with human labels has been
+measured on a sample.** Here the first two hold and the last two do not. So it
+is available, it is off by default, its verdicts are reported beside the
+deterministic ones rather than blended into them, and its two defects are named
+in the output — not only in this file, because a number that travels without its
+caveat is a number without its caveat.
+
+**What none of this measures.** No generation numbers have been produced. There
+was no API key. The harness runs, has been exercised end to end against
+`scripts/stub-llm.js`, and its output on a stub is a property of the stub and is
+recorded nowhere — `rag/eval/generation-results.json` is gitignored for that
+reason.
+
+---
+
+## The instrumentation is hand-written, and there are six metrics
+
+`@opentelemetry/auto-instrumentations-node` was the obvious choice and was not
+taken.
+
+Two reasons, and the second is the real one. First, this package is ESM, and
+auto-instrumentation works by patching CommonJS `require`; under ESM it needs
+`--experimental-loader @opentelemetry/instrumentation/hook.mjs` threaded through
+`npm start`, the Dockerfile, the profiler and the load test — four entry points,
+each of which can be forgotten, and the failure mode of forgetting is silence.
+
+Second, it would have reported `http`, `fs` and `dns`. The measured cost of a
+request here is 78% Tesseract, ~4% retrieval and, against a stub, ~0.6% model
+call. None of those are library calls an auto-instrumentor knows the name of.
+The spans worth having are this application's own stages and would have had to
+be written by hand either way; auto-instrumentation would have added a hundred
+transitive packages and a loader hook to decorate them with `http.server` spans
+that duplicate the one in `server.js`.
+
+The cost of that choice is stated rather than hidden: there is no automatic span
+around an outbound HTTP call, so the Groq round trip is timed by the
+`llm.generate` span written around it and by nothing else, and a `fetch` added
+somewhere else in future will be invisible until somebody wraps it.
+
+**Six metrics, and the discipline is in what was left out.** Request duration by
+route and outcome, cache lookups by result, retrieval duration, OCR rejections
+by reason, provider tokens by kind, OCR queue depth. Three of those exist
+because the earlier performance work needed them and had to reconstruct them
+by hand each time.
+
+Three things deliberately absent. There is **no cache hit-rate gauge**: a ratio
+cannot be re-windowed or summed across instances, two counters can, and the
+division is free at query time. There is **no per-stage metric mirroring the
+spans** — the trace already carries that, and a metric duplicating a span is two
+things to keep in step. And the `http.route` attribute is a **closed set**:
+`req.path` on a 404 is whatever the caller typed, and on an unauthenticated API
+one scan would mint a time series per probed URL, which is a memory leak with a
+dashboard attached.
+
+**Queue depth is an observable gauge, not a counter.** Depth is a level, not an
+event; sampling it at export time costs nothing per request, where incrementing
+and decrementing a counter would put bookkeeping on the OCR path.
+
+**Batch span processor, never simple.** A `SimpleSpanProcessor` serialises and
+writes at the moment each span ends, on the request thread — putting the
+exporter inside the path the instrumentation exists to observe rather than
+speed up.
+
+**A defect this file should record, because it was written here.** Instruments
+are resolved on first use rather than at import, and that is not a style choice.
+`trace.getTracer()` returns a proxy that picks up a provider registered later,
+which is why a module-scope tracer works. `metrics.getMeter()` does not: called
+before `setGlobalMeterProvider`, it returns a `NoopMeter`, and every instrument
+built from it is permanently and silently a no-op. The first version of
+`telemetry.js` created its instruments at import, so traces appeared, metrics
+did not, and nothing anywhere reported an error. It was caught by running the
+server and looking for the metric names, not by reading the code.
+
+**What was deliberately not instrumented.** The two Next.js applications in this
+portfolio have no OpenTelemetry and are not getting any. They are page-render
+and API-route apps whose slow paths are third-party API calls the platform's own
+request log already times; there is no multi-stage pipeline inside a request to
+decompose, so a trace would show one span with the same duration the access log
+already reports. Instrumenting them would add a runtime dependency, a loader
+hook per entry point and a config surface, in exchange for a number that already
+exists. Over-instrumenting a small app is a judgement failure in the same family
+as under-instrumenting a large one, and the honest answer to "why is there no
+tracing in the Next.js apps" is that nothing in them is currently
+unattributable.
