@@ -5,39 +5,31 @@ Food Facts taxonomies say about each ingredient, and returns a verdict per
 ingredient **that cites the passage it came from** — or reports that no
 authoritative source covers that ingredient, rather than inventing one.
 
-**There is no live demo link here on purpose.** The deployment that used to be
-linked runs the pre-retrieval build: its `/health` returns two fields where the
-current code returns six, and it answers whole foods with bare Good/Bad/Neutral
-verdicts and no citations, no `uncovered` list and no abstention. It
-demonstrates the version this README argues against. The link goes back when
-the deployment is rebuilt from `master`.
+## Fastest way to see whether this is any good
 
-Run it locally instead — it takes about two minutes and needs no account of any
-kind. See [Setup](#setup).
+```bash
+cd back-end && npm ci && npm run eval
+```
 
-![Upload screen](./upload.png)
+Six seconds. No API key, no network, no account, no Docker. It scores retrieval
+over 58 hand-labelled questions against a corpus committed to this repository,
+and prints the ablation below, the abstention precision and recall, and — by
+name — the five questions it gets wrong. **Every number in this README is that
+command's output.**
 
-![Analysis result](./dashboard.png)
+| mode | recall@1 | recall@3 | recall@5 |
+| --- | --- | --- | --- |
+| dense only | 48% | 73% | 78% |
+| lexical only (BM25) | 83% | 95% | 95% |
+| hybrid (configured) | 83% | 95% | 95% |
 
-> The screenshots above also show the pre-retrieval version of the results view.
+**Hybrid does not beat lexical on this corpus** — the most useful line in that
+table, and not what the design was hoping for. The reading, the three questions
+where dense retrieval still earns its keep, and the one where the fusion throws
+that win away, are under [Measured results](#measured-results).
 
----
-
-## Why retrieval, and not just a prompt
-
-The first version of this app asked a language model "is this ingredient
-harmful?" and rendered the answer. For a food-safety tool that is the wrong
-shape of output: it is unattributable, it varies between identical requests,
-and it will produce a confident health claim for an ingredient it knows nothing
-about.
-
-Every verdict now has to cite a passage that was actually retrieved from a
-public dataset. A verdict with no citation, or one citing a passage id that was
-never in the prompt, is rejected and the model is asked again. An ingredient
-the corpus does not describe comes back in an `uncovered` list with the reason
-attached. **Reporting the gap is the feature.**
-
----
+`cd back-end && npm test` runs 86 unit tests on the same terms: no key, no
+network, about 35 seconds.
 
 ## Pipeline
 
@@ -118,7 +110,50 @@ cannot support. The multiply-add count does not move.
 It is a linear scan, so this stops being the right answer somewhere in the low
 hundreds of thousands of chunks. `back-end/rag/retriever.js`
 
----
+## What it looks like
+
+![Upload screen](./upload.png)
+
+![Analysis result](./dashboard.png)
+
+> Both screenshots — and the deployment that used to be linked here — show the
+> **pre-retrieval** build: bare Good/Bad/Neutral verdicts, no citations, no
+> `uncovered` list, and a "Powered by Gemini AI" badge the code no longer earns.
+> They are the version this README argues against. Run it locally instead:
+> [Setup](#setup) takes about two minutes and needs no account of any kind.
+> The full detail is in [Notes and limitations](#notes-and-limitations).
+
+## Where this came from
+
+This began in September 2025 as a project that asked a language model "is this
+ingredient harmful?" and rendered the reply. In August 2026 I went back through
+it properly. Four things came out of that. The verdicts were unattributable and
+irreproducible, so the answer path was rebuilt around retrieval from a public
+dataset with a hard citation requirement. The rate limiter was fully bypassable,
+because `trust proxy` was set with no proxy in front of it — 300 requests
+against a 20-request budget all went through. The pixel cap bounded width only,
+so a 2000×20000 upload from a 5MB file cost 126 seconds of CPU. And the
+diagnosis on record — that Tesseract worker startup was "most of" a slow OCR
+call — was wrong: measurement put it at 14%, and pooling helped for a different
+reason than the one written down. What I could not measure is the generation
+half: citation validity and groundedness are unit-tested against a stubbed
+model and have never been run against a live one, because no API key was
+available. That is stated wherever it is relevant rather than left for you to
+find.
+
+## Why retrieval, and not just a prompt
+
+The first version of this app asked a language model "is this ingredient
+harmful?" and rendered the answer. For a food-safety tool that is the wrong
+shape of output: it is unattributable, it varies between identical requests,
+and it will produce a confident health claim for an ingredient it knows nothing
+about.
+
+Every verdict now has to cite a passage that was actually retrieved from a
+public dataset. A verdict with no citation, or one citing a passage id that was
+never in the prompt, is rejected and the model is asked again. An ingredient
+the corpus does not describe comes back in an `uncovered` list with the reason
+attached. **Reporting the gap is the feature.**
 
 ## Measured results
 
@@ -129,14 +164,6 @@ question set is 58 hand-written questions in
 with a known-correct passage, 10 clearly out of corpus, and 8 whole-food
 ingredient names taken off a real label that the corpus genuinely cannot
 answer.
-
-### Ablation: which retriever earns its place
-
-| mode | recall@1 | recall@3 | recall@5 |
-| --- | --- | --- | --- |
-| dense only | 48% | 73% | 78% |
-| lexical only (BM25) | 83% | 95% | 95% |
-| hybrid (configured) | 83% | 95% | 95% |
 
 **Hybrid does not beat lexical on this corpus.** On this question set there is
 not a single query that BM25 misses at k=5 and dense retrieval finds. That is
@@ -234,216 +261,6 @@ but the retrieval-level failure is real and unfixed.
 isomalt passage. That was wrong — the harness now prints the passage rather than
 leaving it to be remembered, and it is the *Sweetener* class chunk.)
 
-### Cost per label
-
-One real label (`Water, Sugar, Jaggery, Tomato Paste, Tamarind (5%), Iodised
-Salt, Spices and Condiments, Stabilizers (INS1422, INS415), Acidity Regulators
-(INS260, INS334) and Preservative (INS211).`) parses to 15 ingredients. Five
-abstain before any token is spent. The remainder produce a prompt of **24
-context passages, 7,448 characters** (~1,860 tokens by the 4-characters-per-token
-rule of thumb — an estimate, not a provider count).
-
-### Latency, and where it goes
-
-Every figure in this section was measured on one machine — **Intel i5-9300H,
-WSL2, Node 24** — pinned to a single core with `taskset -c 0`, because the
-deployment target is a free tier with one shared CPU and an 8-core laptop
-answers a different question. The model call is stubbed
-(`back-end/scripts/stub-llm.js`), so these are the pipeline's own costs with the
-provider round trip removed; add that for a user-facing total.
-
-Before and after were run **back to back in one session**, from a git worktree
-at the pre-pool commit and then at `master`. That matters: the same unchanged
-code measured 3.8s and 7.7s on this laptop two hours apart, so any before/after
-pair taken at different times on this hardware is meaningless.
-
-```bash
-cd back-end
-taskset -c 0 node scripts/profile-analyze.js 3 5
-```
-
-Medians, warm process, one core, in milliseconds:
-
-| stage | before | after |
-| --- | --- | --- |
-| sharp pre-processing | 660 | 422 |
-| Tesseract | 3,257 | 1,502 |
-| **total, server-side** | **3,777** | **1,941** |
-
-First request after a cold boot, medians:
-
-| stage | before | after |
-| --- | --- | --- |
-| retrieval (embed + BM25) | 494 | 133 |
-| Tesseract | 2,721 | 2,136 |
-| **total, server-side** | **3,794** | **3,327** |
-| boot to a healthy `/health` | 672 | 592 |
-
-Three changes account for it: the Tesseract worker is pooled instead of being
-created and destroyed per request; the ONNX embedding session and the corpus
-are built at boot instead of inside the first user's request; and `/health` no
-longer loads the 1.3MB corpus in order to fill in three fields.
-
-**The prior diagnosis was wrong, and the measurement is how I know.** The claim
-on record was that per-request worker startup was "most of" a 21s OCR call.
-`npm run bench:ocr` puts `createWorker` at 397ms against 2,361ms of
-recognition — 14%, not most. Pooling still roughly halves the warm request,
-because in a loaded server process the per-request child-process spawn and WASM
-instantiation cost far more than they do in an isolated benchmark, but the
-dominant cost is recognition itself and it remains so.
-
-### Concurrency
-
-```bash
-cd back-end
-taskset -c 0 node scripts/loadtest.js 8 1 2 3 4 6
-```
-
-One core, pool size 1, eight requests per level, distinct image each time:
-
-| concurrency | ok | failed | p50 | p95 | req/s |
-| --- | --- | --- | --- | --- | --- |
-| 1 | 8 | 0 | 2,214 | 2,567 | 0.46 |
-| 2 | 8 | 0 | 4,483 | 4,751 | 0.46 |
-| 3 | 8 | 0 | 7,367 | 8,734 | 0.41 |
-| 4 | 8 | 0 | 10,204 | 13,904 | 0.37 |
-| 6 | 5 | 3 × `OCR_BUSY` | 12,107 | 17,656 | 0.45 |
-
-**Throughput is flat at roughly 0.45 requests per second no matter how many
-people ask at once, and latency rises linearly with concurrency.** That is the
-correct shape for CPU-bound work on one core and it is the honest limit of this
-deployment: this app serves about one user at a time. At concurrency 6 the
-queue bound starts refusing work with a typed 503 rather than accepting
-requests it cannot finish before a browser gives up.
-
-More workers does not help, which is why the pool defaults to one. Same
-command, `OCR_POOL_SIZE` varied, p50 at concurrency 1 and the throughput range
-across levels 1–4:
-
-| pool size | p50 at concurrency 1 | req/s across 1–4 |
-| --- | --- | --- |
-| 1 | 2,214 | 0.37 – 0.46 |
-| 2 | 4,021 | 0.17 – 0.35 |
-| 3 | 8,701 | 0.12 – 0.24 |
-
-### Limits and abuse
-
-This API is unauthenticated by design — it is a demo anyone can try. That makes
-every bound on it load-bearing, because the only thing standing between a
-visitor and the owner's Groq quota is a rate limiter, and the only thing
-standing between one upload and the container's single CPU is a pixel cap.
-
-An independent review found that neither of those was actually holding. Both
-were fixed, both are measured, and the measurements are reproducible:
-
-**The rate limiter was fully bypassable.** `app.set("trust proxy", 1)` does not
-verify that a proxy exists — it takes an entry from the client-supplied
-`X-Forwarded-For` header as `req.ip`. This app publishes directly
-(`docker-compose.yml` maps `5000:5000`; `front-end/nginx.conf` has no
-`proxy_pass`), so there was no proxy overwriting that header. 300 requests from
-one machine against a 20-per-15-minute budget:
-
-| configuration | allowed | blocked |
-| --- | --- | --- |
-| `trust proxy: 1`, no header | 20 | 280 |
-| `trust proxy: 1`, rotating `X-Forwarded-For` | **300** | **0** |
-| `trust proxy: false` (now the default), rotating `X-Forwarded-For` | 20 | 280 |
-
-`TRUST_PROXY` now defaults to none. **Set `TRUST_PROXY=1` when deploying behind
-Render, Fly or any single proxy** — without it every visitor shares one bucket;
-with it set wrongly there is no bucket at all. `express-rate-limit`'s own
-validator does not catch this: it errors on `true` and says nothing about `1`.
-
-**Bounding one dimension is not bounding the work.** The upload checks —
-`express.json({ limit: "12mb" })` and an 8MB cap on the decoded buffer — bound
-encoded *bytes*. Tesseract's cost tracks *pixels*, and `targetWidth()` returned
-`Math.min(width, maxWidth)`, so a tall image was never downscaled at all.
-`npm run bench:bounds`, one core, text-filled canvases:
-
-| upload | wire | pixels | before | after |
-| --- | --- | --- | --- | --- |
-| 2000×1500 | 0.39MB | 3.0M | 2000×1500, 11.4s | unchanged |
-| 2000×20000 | 5.46MB | 40.0M | **2000×20000, 126.2s** | downscaled into the 4M-pixel budget |
-| 16383×16383 | 8.30MB | 268.4M | 2000×2000, 13.4s | refused before decode |
-
-11.1× the cost of a normal label, from a file well inside the size allowance.
-
-The square case is worth reading carefully, because the obvious explanation is
-wrong: it is **not** stopped by sharp's default pixel limit. 16383² is
-268,402,689 — that limit exactly — so it passes. What saved it was the width cap
-downscaling it to 2000×2000. Bounding width happens to bound a square and does
-nothing to a strip.
-
-Three bounds now, at three levels: `limitInputPixels` stated explicitly rather
-than inherited from a dependency default, `maxPixels` capping the area handed to
-OCR, and a deadline on any single recognition after which the worker is
-destroyed and rebuilt — because tesseract.js exposes no abort, so rejecting the
-caller without killing the worker would free the bookkeeping and not the CPU.
-
-**The pixel cap bounds the work to within about 2×, not exactly**, and finding
-that out changed the deadline. Holding the pixel count at the 4M cap and varying
-only the shape, on one core at load 3.97:
-
-| canvas | megapixels | OCR | confidence |
-| --- | --- | --- | --- |
-| 2000×2000 | 4.0 | 12,989ms | 94 |
-| 1265×3162 | 4.0 | **27,628ms** | 94 |
-| 632×6325 | 4.0 | 19,665ms | 88 |
-| 400×10000 | 4.0 | 17,461ms | 57 |
-| 200×20000 | 4.0 | 19,429ms | 55 |
-
-A 2.1× spread at identical pixel counts, and not monotonic in aspect ratio, so
-no simple shape rule tightens it. The first deadline tried here was 30 seconds,
-which that table rejects: it leaves a 1.09× margin over the worst legitimate
-image the cap admits, so it would have fired on real uploads. It is 60 seconds,
-about 2.2× the worst measured case.
-
-The cost of the larger number is real and worth stating: one request can hold
-the single OCR worker for a minute. What bounds that in aggregate is the rate
-limiter — which is exactly why that had to be repaired first.
-
-**Two more places where the caller chose how much work the server did.**
-Ingredient parsing used a quadratic regex, synchronously, on OCR output —
-32ms / 133ms / 600ms / 2666ms at 5k / 10k / 20k / 40k characters, blocking the
-event loop for every other request. It is linear now, and the text is capped
-before it runs. And the result cache had no `maxKeys`, while its keys are
-content hashes of caller-supplied bytes; it is bounded, and evicts rather than
-throwing when full.
-
-All of it is in [DECISIONS.md](./DECISIONS.md) with the reasoning, and covered
-by tests in `back-end/tests/`.
-
-### What did not work
-
-- **Downscaling the image before OCR.** `maxWidth: 1200` cut the sample from
-  3,270ms to 2,024ms and turned `INS1422, INS415 ... INS211` into
-  `NS1422 ... NS211`. Those identifiers are exactly what BM25 matches on, so it
-  is not a speed-up, it is a broken retriever. Reverted.
-  `npm run bench:preprocess`
-- **Dropping `sharpen` or `normalise`.** Each saves 250–350ms of sharp time and
-  each damages the extracted text on at least one of the three test subjects.
-  Kept.
-- **`png compressionLevel: 0`.** Byte-identical OCR output, and no time
-  difference this machine can resolve. The *unchanged* configuration measured
-  2,663ms, 3,345ms and 3,665ms of recognition on three runs of the same sweep,
-  so an effect of a couple of hundred milliseconds cannot be distinguished from
-  the machine. Not changed.
-
-Nothing in `OCR_PREPROCESS` changed as a result of this work. The benchmark
-that says why is committed.
-
-### Not measured
-
-**Citation validity, groundedness and abstention-after-generation are
-implemented and unit-tested against a stubbed model, but were not measured
-against a live model, because no Groq API key was available when this was
-written.** `npm run eval` covers everything up to the model call. To measure
-the generation half, set `GROQ_API_KEY` and extend
-`rag/eval/run-eval.js`; the harness's structure is there, the numbers are not.
-Nothing in this README claims otherwise.
-
----
-
 ## Setup
 
 Prerequisites: Node.js 20 or newer. **No account of any kind is needed to see
@@ -512,7 +329,7 @@ Frontend on http://localhost:8080, API on http://localhost:5000.
 | `OCR_POOL_SIZE` | back-end | no | Tesseract workers. Defaults to 1; see the sweep in `services/ocrPool.js`. |
 | `OCR_MAX_QUEUE` | back-end | no | Requests allowed to wait for a worker before new ones get a 503. Defaults to 4. |
 | `OCR_JOB_TIMEOUT_MS` | back-end | no | Ceiling on one recognition, after which the worker is destroyed and rebuilt. Defaults to 60000. |
-| `TRUST_PROXY` | back-end | **read the note** | Number of proxies in front of this process. Defaults to none. Getting this wrong disables the rate limiter — see [Limits and abuse](#limits-and-abuse). |
+| `TRUST_PROXY` | back-end | **read the note** | Number of proxies in front of this process. Defaults to none. Getting this wrong disables the rate limiter — see [Limits and abuse](./MEASUREMENTS.md#limits-and-abuse). |
 | `CORS_ORIGINS` | back-end | no | Comma-separated exact origins. Overrides the built-in list. No wildcards. |
 | `RATE_LIMIT_MAX` / `ANALYZE_RATE_LIMIT_MAX` | back-end | no | Per-IP budgets per 15 min. Default 100 / 20. Raised only by the load test. |
 | `GEMINI_API_KEY` | back-end | no | Enables Gemini Vision OCR ahead of Tesseract. |
@@ -553,6 +370,10 @@ it on your own photos.
 CI (`.github/workflows/ci.yml`) runs the unit tests, the retrieval evaluation
 (which fails the build if hybrid recall@5 drops below 85%), and the frontend
 lint and build.
+
+The output of the five performance commands — where the time goes, what
+throughput this actually sustains, and what an unauthenticated upload can make
+the server do — is in [MEASUREMENTS.md](./MEASUREMENTS.md).
 
 ---
 
@@ -600,25 +421,25 @@ argued in [DECISIONS.md](./DECISIONS.md).
 - **It serves about one user at a time.** Measured, not estimated: on a single
   core, throughput is flat at roughly 0.45 requests per second regardless of
   concurrency, and p50 goes from 2.2s at concurrency 1 to 10.2s at concurrency
-  4. See [Concurrency](#concurrency). Past a queue depth of four the API
+  4. See [Concurrency](./MEASUREMENTS.md#concurrency). Past a queue depth of four the API
   refuses new work with a 503 rather than accepting requests it cannot finish.
 - **Roughly a second and a half of every request is Tesseract, and that is the
   floor.** Pooling the worker and warming the model at boot roughly halved a
   warm request; what is left is recognition itself. The only lever that would
   move it further is feeding Tesseract fewer pixels, and
-  [that was measured and rejected](#what-did-not-work) because it destroys the
+  [that was measured and rejected](./MEASUREMENTS.md#what-did-not-work) because it destroys the
   additive codes retrieval depends on. Faster than this means a different OCR
   engine, or doing OCR in the browser.
 - **The API is unauthenticated on purpose, so its bounds carry the whole
   weight.** A rate limiter that did not work and a pixel cap that bounded only
   width were both found by review and both fixed; see
-  [Limits and abuse](#limits-and-abuse). If you deploy this behind a proxy, read
+  [Limits and abuse](./MEASUREMENTS.md#limits-and-abuse). If you deploy this behind a proxy, read
   the `TRUST_PROXY` note there before you do.
 - **These are laptop numbers, not Render numbers.** The free-tier deployment
   could not be re-measured, because it runs the pre-retrieval build and this
   work was not deployed. The earlier README figures for it (22.5s cold, 25.5s
   warm) were measured against that older build and are not comparable to
-  anything in the section above.
+  anything in [MEASUREMENTS.md](./MEASUREMENTS.md).
 - **The result cache is in-process.** Lost on restart, not shared between
   instances.
 - **English only.** Only `eng.traineddata` is bundled.
@@ -626,6 +447,17 @@ argued in [DECISIONS.md](./DECISIONS.md).
   build in CI, nothing more.
 - **The Docker setup has not been executed** in the environment where it was
   written; the Node and Vite builds it wraps have been.
+- **The generation half is not measured.** Citation validity, groundedness and
+  abstention-after-generation are implemented and unit-tested against a stubbed
+  model, but were never run against a live one, because no Groq API key was
+  available when this was written. `npm run eval` covers everything up to the
+  model call and nothing past it. See
+  [Not measured](./MEASUREMENTS.md#not-measured).
+- **There is no live demo link, on purpose.** The deployment that used to be
+  linked runs the pre-retrieval build — its `/health` returns two fields where
+  this code returns six, and it answers whole foods with bare Good/Bad/Neutral
+  verdicts, no citations, no `uncovered` list and no abstention. The link goes
+  back when that deployment is rebuilt from `master`.
 
 ---
 
