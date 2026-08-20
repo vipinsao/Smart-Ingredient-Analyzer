@@ -10,7 +10,12 @@
     "ocr:benchmark": "node scripts/ocr-benchmark.js",
     "smoke": "node scripts/smoke-analyze.js",
     "eval": "node rag/eval/run-eval.js",
-    "ingest": "node rag/ingest.js"
+    "ingest": "node rag/ingest.js",
+    "profile": "node scripts/profile-analyze.js",
+    "loadtest": "node scripts/loadtest.js",
+    "bench:ocr": "node scripts/bench-ocr-worker.js",
+    "bench:preprocess": "node scripts/bench-preprocess.js",
+    "stub-llm": "node scripts/stub-llm.js"
   },
   "keywords": [],
   "author": "",

@@ -38,13 +38,24 @@ export const TESSERACT_PARAMETERS = {
 /**
  * How many workers, and how deep the queue in front of them may get.
  *
- * The default is 1. Not a guess: `taskset -c 0 node scripts/bench-ocr-pool.js`
- * measures pool sizes 1..3 under concurrent load on a single core, and on one
- * core a second worker cannot run in parallel with the first - it only splits
- * the same core between two WASM heaps, so throughput is flat and every
- * individual request gets slower. The free hosting tier this app targets is a
- * single shared CPU with 512MB, so 1 is the size that fits it. Raise it with
- * OCR_POOL_SIZE on a box with real cores, after re-running the benchmark there.
+ * The default is 1, and it is measured rather than assumed. Run:
+ *
+ *   OCR_POOL_SIZE=1 taskset -c 0 node scripts/loadtest.js 6 1 2 3 4
+ *
+ * and again with 2 and 3. On one core of this machine (i5-9300H, WSL2, Node 24),
+ * p50 at concurrency 1 and sustained throughput across concurrency 1-4:
+ *
+ *   pool 1   p50  2214ms   0.37 - 0.46 req/s
+ *   pool 2   p50  4021ms   0.17 - 0.35 req/s
+ *   pool 3   p50  8701ms   0.12 - 0.24 req/s
+ *
+ * More workers is not slightly worse, it is much worse, and it is worse even at
+ * concurrency 1. A second worker cannot run in parallel with the first on one
+ * core; it only adds another resident WASM heap for the same core to page
+ * around. The free hosting tier this targets is a single shared CPU, so 1 is
+ * the size that fits it. OCR_POOL_SIZE raises it on a box with real cores -
+ * after re-running that sweep there, because the answer is a property of the
+ * machine and not of this file.
  */
 export const DEFAULT_POOL_SIZE = 1;
 
