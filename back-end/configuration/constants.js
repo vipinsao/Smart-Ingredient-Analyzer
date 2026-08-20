@@ -112,6 +112,37 @@ export const GEMINI_TIMEOUT_MS = 15000;
 
 export const OCR_PREPROCESS = {
   maxWidth: 2000,
+  /**
+   * Cap on the pixels handed to Tesseract, which is what its runtime is
+   * actually proportional to.
+   *
+   * maxWidth alone bounded one dimension, and one dimension is not the work.
+   * `targetWidth` returned min(width, 2000), so a 2000x20000 upload received no
+   * downscale at all and went to OCR as a 40-megapixel canvas. Measured on one
+   * core: a 2000x1500 label costs 11.4s end to end, and that 2000x20000 image -
+   * 5.46MB on the wire, comfortably under the 8MB cap - costs 126.2s. 11.1x,
+   * from a file a third the size of the allowance.
+   *
+   * 4M is 2000x2000: above the 1.9M of the repo's own 1599x1200 sample and
+   * above any label photographed at a sane aspect ratio, so no real upload is
+   * downscaled by this that was not already downscaled by maxWidth.
+   */
+  maxPixels: 4_000_000,
+  /**
+   * Ceiling on the DECODED size of an upload, stated rather than inherited.
+   *
+   * sharp has its own default (268,402,689) and it does work, but nothing in
+   * this repo said so - `grep -rn limitInputPixels back-end/` returned nothing -
+   * so the guarantee rested on a library default that a version bump could
+   * change silently. It is also worth noting the default is not what protects
+   * the square case: a 16383x16383 upload is 268,402,689 pixels exactly, so it
+   * passes the default limit; what saves it is the width cap downscaling it to
+   * 2000x2000. Measured at 13.4s, against 11.4s for a normal label.
+   *
+   * 80M is ~20x the working cap above and still refuses anything absurd before
+   * a single row is decoded.
+   */
+  limitInputPixels: 80_000_000,
   // sharp's own default. Named here so scripts/bench-preprocess.js can vary it;
   // the sweep found no time difference this hardware can resolve, so it stays.
   compressionLevel: 6,

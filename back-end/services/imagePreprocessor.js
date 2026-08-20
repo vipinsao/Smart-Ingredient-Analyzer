@@ -21,7 +21,7 @@ import logger from "../utils/logger.js";
  */
 export async function inspectImage(buffer) {
   try {
-    const metadata = await sharp(buffer).metadata();
+    const metadata = await sharp(buffer, sharpLimits()).metadata();
     if (!metadata.width || !metadata.height) {
       throw new Error("missing dimensions");
     }
@@ -34,10 +34,40 @@ export async function inspectImage(buffer) {
   }
 }
 
+/**
+ * Options handed to every sharp() constructor in this file.
+ *
+ * limitInputPixels is stated rather than inherited: sharp's default happens to
+ * be sane, but a guarantee that lives only in a dependency's default is a
+ * guarantee that can change under a version bump without anything here failing.
+ */
+function sharpLimits() {
+  return { limitInputPixels: OCR_PREPROCESS.limitInputPixels };
+}
+
 function targetWidth(originalWidth, maxWidth) {
   // Never upscale: enlarging a small photo invents no new detail and only
   // makes OCR slower.
   return Math.min(originalWidth, maxWidth);
+}
+
+/**
+ * Width that satisfies BOTH the width cap and the total-pixel cap.
+ *
+ * Bounding width alone does not bound the work, and the difference is not
+ * academic: `targetWidth(2000, 2000)` is 2000, so a 2000x20000 upload was
+ * passed to Tesseract at full size and took 126.2s against 11.4s for a normal
+ * label. Aspect ratio routed straight around the width cap. Area is what
+ * Tesseract's runtime tracks, so area is what has to be capped.
+ *
+ * Scaling is uniform, so the aspect ratio is preserved and a genuinely tall
+ * receipt is shrunk rather than cropped or rejected.
+ */
+export function boundedWidth(width, height, { maxWidth, maxPixels }) {
+  const byWidth = targetWidth(width, maxWidth);
+  const pixelsAtThatWidth = (byWidth / width) ** 2 * width * height;
+  if (pixelsAtThatWidth <= maxPixels) return Math.max(1, Math.round(byWidth));
+  return Math.max(1, Math.floor(byWidth * Math.sqrt(maxPixels / pixelsAtThatWidth)));
 }
 
 /**
@@ -46,9 +76,12 @@ function targetWidth(originalWidth, maxWidth) {
 export async function prepareForVision(buffer, { isMobile = false } = {}) {
   const metadata = await inspectImage(buffer);
   const maxWidth = isMobile ? VISION_PREPROCESS.maxWidthMobile : VISION_PREPROCESS.maxWidth;
-  const width = targetWidth(metadata.width, maxWidth);
+  const width = boundedWidth(metadata.width, metadata.height, {
+    maxWidth,
+    maxPixels: OCR_PREPROCESS.maxPixels,
+  });
 
-  const output = await sharp(buffer)
+  const output = await sharp(buffer, sharpLimits())
     .resize(width, null, { withoutEnlargement: true, kernel: sharp.kernel.lanczos3 })
     .jpeg({
       quality: isMobile ? VISION_PREPROCESS.qualityMobile : VISION_PREPROCESS.quality,
@@ -82,6 +115,7 @@ export async function prepareForVision(buffer, { isMobile = false } = {}) {
 export async function preprocessForOcr(buffer, options = {}) {
   const {
     maxWidth = OCR_PREPROCESS.maxWidth,
+    maxPixels = OCR_PREPROCESS.maxPixels,
     compressionLevel = OCR_PREPROCESS.compressionLevel,
     grayscale = true,
     normalise = true,
@@ -89,9 +123,9 @@ export async function preprocessForOcr(buffer, options = {}) {
   } = options;
 
   const metadata = await inspectImage(buffer);
-  const width = targetWidth(metadata.width, maxWidth);
+  const width = boundedWidth(metadata.width, metadata.height, { maxWidth, maxPixels });
 
-  let pipeline = sharp(buffer).resize(width, null, {
+  let pipeline = sharp(buffer, sharpLimits()).resize(width, null, {
     withoutEnlargement: true,
     kernel: sharp.kernel.lanczos3,
   });
@@ -109,6 +143,7 @@ export async function preprocessForOcr(buffer, options = {}) {
     sourceBytes: buffer.length,
     outputBytes: output.length,
     sourceWidth: metadata.width,
+    sourceHeight: metadata.height,
     outputWidth: width,
     grayscale,
     normalise,
@@ -123,9 +158,9 @@ export async function preprocessForOcr(buffer, options = {}) {
  * increases separation between text and background on a low-contrast image.
  */
 export async function measureContrast(buffer) {
-  const { channels } = await sharp(buffer).stats();
+  const { channels } = await sharp(buffer, sharpLimits()).stats();
   const stdev = channels.reduce((sum, channel) => sum + channel.stdev, 0) / channels.length;
   return stdev;
 }
 
-export default { inspectImage, prepareForVision, preprocessForOcr, measureContrast };
+export default { inspectImage, prepareForVision, preprocessForOcr, measureContrast, boundedWidth };
