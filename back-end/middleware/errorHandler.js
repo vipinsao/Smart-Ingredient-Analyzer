@@ -8,6 +8,7 @@
 // large" - fell through to a generic 500.
 import AppError from "../utils/AppError.js";
 import logger from "../utils/logger.js";
+import { isProductionEnv } from "../configuration/env.js";
 
 export class ErrorHandler {
   static handle(error, req, res) {
@@ -55,8 +56,12 @@ export class ErrorHandler {
       detail: error?.details ?? message,
     });
 
-    // Internal detail is exposed only outside production.
-    if (process.env.NODE_ENV !== "production") {
+    // Internal detail is exposed only in an environment that has explicitly
+    // named itself development or test. The previous test was
+    // `NODE_ENV !== "production"`, which leaked internals for every other value
+    // the variable can hold - "prod", "staging", a typo, or the empty string a
+    // container gets when the variable is dropped.
+    if (!isProductionEnv()) {
       errorResponse.debug = error?.details ?? message;
     }
 

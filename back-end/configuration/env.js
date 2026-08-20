@@ -69,6 +69,29 @@ export function parseTrustProxy(raw) {
   return false;
 }
 
+/**
+ * Should this process behave as a production deployment? Anything that has not
+ * explicitly named itself development or test is treated as one.
+ *
+ * Deliberately a deny-list, and deliberately reading the RAW variable rather
+ * than `env.NODE_ENV`. Two separate reasons:
+ *
+ *   - The old test was `NODE_ENV !== "production"`, so every other value -
+ *     "prod", "Production", "staging", a typo - took the development branch and
+ *     attached internal error detail to the response.
+ *   - `env.NODE_ENV` falls back to "development" when the variable is unset,
+ *     which is a fine default for choosing a port but the wrong one for
+ *     deciding whether to expose internals. A container that loses the variable
+ *     must not start talking.
+ *
+ * Used for that decision only. Choosing the CORS origin list still keys off
+ * `env.NODE_ENV`, because there the unset case already fails closed: the
+ * development list is localhost-only, which is narrower than production's.
+ */
+export function isProductionEnv(nodeEnv = process.env.NODE_ENV) {
+  return nodeEnv !== "development" && nodeEnv !== "test";
+}
+
 function parseList(raw) {
   if (!raw) return [];
   return raw.split(",").map((entry) => entry.trim()).filter(Boolean);
