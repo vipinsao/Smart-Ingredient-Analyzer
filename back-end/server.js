@@ -19,6 +19,7 @@ import {
 } from "./configuration/constants.js";
 
 import ocrService from "./services/ocrService.js";
+import { terminateOcrPool } from "./services/ocrPool.js";
 import { getRetriever } from "./rag/retriever.js";
 import { analyzeIngredients } from "./services/analysisService.js";
 import cacheManager from "./utils/cache.js";
@@ -167,7 +168,8 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
     const ocrResult = await ocrService.processImage(imageBuffer, { isMobile });
     timer.mark("ocr");
     timer.record("ocrPreprocess", ocrResult.preprocessMs);
-    timer.record("ocrRecognise", ocrResult.processingTime);
+    timer.record("ocrWait", ocrResult.waitMs);
+    timer.record("ocrRecognise", ocrResult.recogniseMs ?? ocrResult.processingTime);
 
     const ingredientsText = AnalysisHelpers.extractIngredients(ocrResult.text);
     const ingredientsValidation = Validators.validateIngredients(ingredientsText);
@@ -278,8 +280,31 @@ process.on("unhandledRejection", (reason) => {
   });
 });
 
-function shutdown(signal) {
+let shuttingDown = false;
+
+const SHUTDOWN_TIMEOUT_MS = 5000;
+
+// The OCR pool is a set of child processes. Left running they outlive the
+// signal and the container has to be killed rather than stopped, so the exit is
+// asynchronous now - with a deadline, because a shutdown that hangs waiting for
+// a stuck worker is not a shutdown.
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   logger.info("shutting down", { signal });
+
+  const timer = setTimeout(() => {
+    logger.warn("shutdown timed out, exiting anyway", { signal });
+    process.exit(0);
+  }, SHUTDOWN_TIMEOUT_MS);
+  timer.unref();
+
+  try {
+    await terminateOcrPool();
+  } catch (error) {
+    logger.warn("shutdown error", { reason: error?.message });
+  }
+
   cacheManager.close();
   process.exit(0);
 }

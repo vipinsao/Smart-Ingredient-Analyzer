@@ -4,10 +4,10 @@
 // Engine order: Gemini Vision first when a key is configured (it reads
 // stylised label typography far better), Tesseract otherwise. Tesseract always
 // works and needs no key, so the app is usable with the Groq key alone.
-import Tesseract from "tesseract.js";
 import fetch from "node-fetch";
 import { GEMINI_TIMEOUT_MS } from "./configuration/constants.js";
 import { prepareForVision, preprocessForOcr } from "./services/imagePreprocessor.js";
+import { recognize } from "./services/ocrPool.js";
 import AppError from "./utils/AppError.js";
 import logger from "./utils/logger.js";
 
@@ -214,18 +214,19 @@ export async function performGeminiVisionOCR(imageBuffer) {
   };
 }
 
-/** Tesseract OCR. No key, no network, MIT licensed - the always-available path. */
+/**
+ * Tesseract OCR. No key, no network, MIT licensed - the always-available path.
+ *
+ * The work runs on a pooled worker (services/ocrPool.js). It used to call
+ * `Tesseract.recognize`, which creates a worker, uses it once and terminates it;
+ * the language pack and WASM core were therefore reloaded on every request.
+ */
 export async function performTesseractOCR(imageBuffer) {
   const startTime = performance.now();
 
-  const result = await Tesseract.recognize(imageBuffer, "eng", {
-    logger: () => {},
-    tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
-    tessedit_char_whitelist:
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789,().-% :",
-  });
+  const { data, waitMs, recogniseMs } = await recognize(imageBuffer);
 
-  const extractedText = result.data.text;
+  const extractedText = data.text;
   const validation = validateIngredientText(extractedText);
 
   if (!validation.isValid) {
@@ -237,10 +238,14 @@ export async function performTesseractOCR(imageBuffer) {
 
   return {
     text: extractedText,
-    confidence: Math.min(result.data.confidence, validation.confidence),
+    confidence: Math.min(data.confidence, validation.confidence),
     method: "tesseract",
-    words: result.data.words?.length || 0,
+    words: data.words?.length || 0,
     processingTime: Math.round(performance.now() - startTime),
+    // Queueing behind another request and recognising are reported apart, so a
+    // slow response under load is attributable to load rather than to OCR.
+    waitMs,
+    recogniseMs,
     validation,
   };
 }
@@ -283,6 +288,8 @@ export async function performSmartOCR(imageBuffer, { isMobile = false } = {}) {
   logger.info("ocr complete", {
     method: result.method,
     preprocessMs,
+    waitMs: result.waitMs,
+    recogniseMs: result.recogniseMs,
     ms: result.processingTime,
     confidence: result.confidence,
   });
