@@ -114,7 +114,7 @@ const WebcamCapture = ({ webcamRef, onCapture, onBack }) => {
             <div className="absolute inset-0 pointer-events-none z-10">
               {/* Simple center guide */}
               <div className="absolute top-4 left-1/2 transform -translate-x-1/2">
-                <div className="bg-black bg-opacity-60 text-white px-4 py-2 rounded-lg text-sm font-medium backdrop-blur-sm">
+                <div className="bg-black/60 text-white px-4 py-2 rounded-lg text-sm font-medium backdrop-blur-sm">
                   📋 Focus on ingredients
                 </div>
               </div>
@@ -142,7 +142,7 @@ const WebcamCapture = ({ webcamRef, onCapture, onBack }) => {
           {isReady && !error && (
             <button
               onClick={() => setShowGuides(!showGuides)}
-              className="absolute top-4 right-4 bg-black bg-opacity-60 text-white px-3 py-2 rounded-lg text-xs font-medium backdrop-blur-sm hover:bg-opacity-80 transition-all z-20"
+              className="absolute top-4 right-4 bg-black/60 text-white px-3 py-2 rounded-lg text-xs font-medium backdrop-blur-sm hover:bg-black/80 transition-all z-20"
             >
               {showGuides ? "👁️ Hide guides" : "📋 Show guides"}
             </button>

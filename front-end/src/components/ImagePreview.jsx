@@ -29,7 +29,7 @@ const ImagePreview = ({
           )}
           
           {isProcessing && (
-            <div className="absolute inset-2 bg-black bg-opacity-40 rounded-xl flex items-center justify-center backdrop-blur-sm">
+            <div className="absolute inset-2 bg-black/40 rounded-xl flex items-center justify-center backdrop-blur-sm">
               <div className="bg-white rounded-xl p-4 shadow-xl">
                 <div className="animate-spin w-8 h-8 border-3 border-blue-600 border-t-transparent rounded-full mx-auto mb-2"></div>
                 <p className="text-sm font-medium text-gray-700">Processing...</p>
