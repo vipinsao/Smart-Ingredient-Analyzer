@@ -18,6 +18,13 @@ const ALLERGEN_MATCHERS = Object.entries(ALLERGENS).map(([allergen, keywords]) =
   })),
 }));
 
+/**
+ * Longest OCR output that will be parsed. Everything past this is discarded.
+ *
+ * Not a formatting choice - a bound on synchronous work on the request thread.
+ */
+export const MAX_OCR_TEXT_CHARS = 20000;
+
 export class AnalysisHelpers {
   /**
    * Pull the ingredient list out of raw OCR text.
@@ -34,7 +41,15 @@ export class AnalysisHelpers {
       return "";
     }
 
-    const lines = text
+    // Bound the input before any regex touches it. This runs synchronously on
+    // the main thread against whatever Tesseract produced, and Tesseract's
+    // output length is chosen by whoever uploaded the image, not by us. A real
+    // ingredient list is a few hundred characters; the cap is an order of
+    // magnitude above the longest label and still bounds the work.
+    const bounded =
+      text.length > MAX_OCR_TEXT_CHARS ? text.slice(0, MAX_OCR_TEXT_CHARS) : text;
+
+    const lines = bounded
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean);
@@ -91,7 +106,21 @@ export class AnalysisHelpers {
       .replace(/[{}[\]]/g, "")
       .replace(/\s+/g, " ")
       .replace(/[^\w\s,().%\-:]/g, "")
-      .replace(/\b(?!ins)\d+(?!\d*%|ins)\b/gi, "")
+      // Strip bare numbers, keep "5%" and keep the digits inside "INS1422".
+      //
+      // This was /\b(?!ins)\d+(?!\d*%|ins)\b/gi, which is quadratic: the `\d*`
+      // inside the lookahead re-scans the rest of the digit run at every
+      // backtrack position. Measured on this machine, a digit run followed by
+      // "ins" - 5k/10k/20k/40k characters - cost 32ms/133ms/600ms/2666ms, a
+      // clean 4x per doubling, blocking the event loop for every other request.
+      // The same inputs measure 0ms here.
+      //
+      // The two guards it dropped were doing nothing. `(?!ins)` sat between a
+      // word boundary and `\d+`, so it could never match. The `ins` half of the
+      // trailing lookahead is already enforced by `\b`, since a digit followed
+      // by a letter is not a word boundary - which is also what keeps
+      // "INS1422" intact.
+      .replace(/\b\d+\b(?!%)/g, "")
       .replace(/\b[a-zA-Z]{1}\b/g, "")
       .replace(/,\s*,/g, ",")
       .replace(/\(\s*\)/g, "")
