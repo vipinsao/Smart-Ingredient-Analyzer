@@ -1,9 +1,36 @@
-// utils/helpers.js - Helper Functions
+// utils/helpers.js - Deterministic post-processing of the OCR text and the
+// model's verdicts. Nothing in this file calls a network service: given the
+// same input it always returns the same output, which is what makes the
+// allergen flags and the health score explainable.
 import { HARMFUL_INGREDIENTS, ALLERGENS } from "../configuration/constants.js";
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// Word-boundary matcher, tolerant of a trailing plural.
+// Built once per keyword at module load rather than per request.
+const ALLERGEN_MATCHERS = Object.entries(ALLERGENS).map(([allergen, keywords]) => ({
+  allergen,
+  keywords: keywords.map((keyword) => ({
+    keyword,
+    pattern: new RegExp(`\\b${escapeRegExp(keyword)}s?\\b`, "i"),
+  })),
+}));
+
 export class AnalysisHelpers {
+  /**
+   * Pull the ingredient list out of raw OCR text.
+   *
+   * Strategy, in order:
+   *  1. anchor on an "Ingredients:" style heading and read until the next
+   *     section heading (nutrition, storage, manufacturer, ...);
+   *  2. if no heading was found, keep the lines that look like ingredient
+   *     lines (commas, percentages, common ingredient words);
+   *  3. if that finds nothing either, fall back to the whole text.
+   */
   static extractIngredients(text) {
-    if (!text || text.trim().length === 0) {
+    if (typeof text !== "string" || text.trim().length === 0) {
       return "";
     }
 
@@ -19,7 +46,7 @@ export class AnalysisHelpers {
     let ingredientLines = [];
     let startFound = false;
 
-    for (let line of lines) {
+    for (const line of lines) {
       if (!startFound && /ingredients?|contents?|contains?/i.test(line)) {
         startFound = true;
         const cleanLine = line.replace(/^ingredients?:?\s*/i, "");
@@ -59,7 +86,7 @@ export class AnalysisHelpers {
       ingredientLines = lines;
     }
 
-    const result = ingredientLines
+    return ingredientLines
       .join(" ")
       .replace(/[{}[\]]/g, "")
       .replace(/\s+/g, " ")
@@ -69,31 +96,52 @@ export class AnalysisHelpers {
       .replace(/,\s*,/g, ",")
       .replace(/\(\s*\)/g, "")
       .trim();
-
-    return result;
   }
 
-  static detectAllergens(ingredients) {
-    const detectedAllergens = [];
-    const ingredientsLower = ingredients.toLowerCase();
-
-    for (const [allergen, keywords] of Object.entries(ALLERGENS)) {
-      if (keywords.some((keyword) => ingredientsLower.includes(keyword))) {
-        detectedAllergens.push(allergen);
-      }
+  /**
+   * Flag allergens by matching the keyword table on word boundaries.
+   *
+   * @returns {{ allergens: string[], details: Array<{allergen: string, matches: string[]}> }}
+   */
+  static detectAllergenDetails(ingredients) {
+    if (typeof ingredients !== "string" || ingredients.trim() === "") {
+      return { allergens: [], details: [] };
     }
 
-    return detectedAllergens;
+    const details = [];
+
+    for (const { allergen, keywords } of ALLERGEN_MATCHERS) {
+      const matches = keywords
+        .filter(({ pattern }) => pattern.test(ingredients))
+        .map(({ keyword }) => keyword);
+
+      if (matches.length > 0) details.push({ allergen, matches });
+    }
+
+    return { allergens: details.map((entry) => entry.allergen), details };
   }
 
+  /** Backwards-compatible shape: the list of allergen names only. */
+  static detectAllergens(ingredients) {
+    return AnalysisHelpers.detectAllergenDetails(ingredients).allergens;
+  }
+
+  /**
+   * Score = 100, minus 10 for every ingredient the model called Bad and 4 for
+   * every Neutral one. Tolerates malformed rows so a single bad verdict cannot
+   * take the whole request down with a TypeError.
+   */
   static calculateHealthScore(analysis) {
+    const rows = Array.isArray(analysis) ? analysis : [];
+
     let score = 100;
     let goodCount = 0;
     let badCount = 0;
     let neutralCount = 0;
 
-    analysis.forEach((item) => {
-      switch (item.status.toLowerCase()) {
+    for (const item of rows) {
+      const status = typeof item?.status === "string" ? item.status.toLowerCase() : "";
+      switch (status) {
         case "good":
           goodCount++;
           break;
@@ -108,7 +156,7 @@ export class AnalysisHelpers {
         default:
           break;
       }
-    });
+    }
 
     return {
       score: Math.max(0, Math.min(100, score)),
@@ -116,9 +164,13 @@ export class AnalysisHelpers {
     };
   }
 
+  /** Which of the model's verdicts name an ingredient on the harmful list. */
   static detectHarmfulIngredients(analysis) {
-    return analysis.filter((item) =>
-      HARMFUL_INGREDIENTS.has(item.ingredient.toLowerCase())
+    const rows = Array.isArray(analysis) ? analysis : [];
+    return rows.filter(
+      (item) =>
+        typeof item?.ingredient === "string" &&
+        HARMFUL_INGREDIENTS.has(item.ingredient.trim().toLowerCase())
     );
   }
 }

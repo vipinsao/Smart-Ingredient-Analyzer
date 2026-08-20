@@ -1,344 +1,247 @@
-// server.js - Main Express Server (PRODUCTION LEVEL)
+// server.js - HTTP layer.
+//
+// Pipeline for POST /api/analyze:
+//   validate body -> decode base64 -> validate bytes (size + magic number)
+//   -> image cache lookup -> preprocess + OCR -> extract ingredient text
+//   -> text cache lookup -> LLM analysis (schema-validated) -> deterministic
+//      allergen + health scoring -> respond.
 import express from "express";
 import cors from "cors";
-import bodyParser from "body-parser";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
+import crypto from "crypto";
 
-// Config
 import { env, validateEnv } from "./configuration/env.js";
-import { RATE_LIMIT_CONFIG } from "./configuration/constants.js";
+import {
+  RATE_LIMIT_CONFIG,
+  ANALYZE_RATE_LIMIT,
+  IMAGE_LIMITS,
+} from "./configuration/constants.js";
 
-// Services & Utils
+import ocrService from "./services/ocrService.js";
 import groqService from "./services/groqService.js";
 import cacheManager from "./utils/cache.js";
 import Validators from "./utils/validators.js";
 import AnalysisHelpers from "./utils/helpers.js";
 import ErrorHandler from "./middleware/errorHandler.js";
+import AppError from "./utils/AppError.js";
+import logger from "./utils/logger.js";
 
-// OCR functions
-import {
-  preprocessImage,
-  performOCRWithMultipleVersions,
-  performSmartOCR,
-  ultraFastPreprocess,
-} from "./optimized-ocr.js";
-
-// Validate environment
-validateEnv();
+const { geminiOcrEnabled } = validateEnv();
 
 const app = express();
 const PORT = env.PORT;
 
 // ============= MIDDLEWARE =============
 
-// Security middleware
 app.use(helmet());
 
-// Rate limiting
-const limiter = rateLimit({
+// Render, Fly and every other PaSS put a proxy in front of the app. Without
+// this every client shares the proxy's IP and the per-IP rate limiter becomes
+// one global bucket. `1` trusts exactly one hop - not `true`, which would let
+// a client spoof its own address via X-Forwarded-For.
+app.set("trust proxy", 1);
+
+app.use(rateLimit({
   windowMs: RATE_LIMIT_CONFIG.windowMs,
   max: RATE_LIMIT_CONFIG.max,
-  message: { error: "Too many requests, please try again later" },
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later", code: "RATE_LIMITED" },
+}));
+
+// Tighter budget for the one route that costs OCR CPU and a model call.
+const analyzeLimiter = rateLimit({
+  windowMs: ANALYZE_RATE_LIMIT.windowMs,
+  max: ANALYZE_RATE_LIMIT.max,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: "Analysis limit reached. Please wait a few minutes before trying again.",
+    code: "ANALYZE_RATE_LIMITED",
+  },
 });
-app.use(limiter);
 
-// CORS
-app.options("*", cors());
-app.use(
-  cors({
-    origin:
-      env.NODE_ENV === "production"
-        ? [
-            "https://smart-ingredient-analyzer.vercel.app",
-            "https://ai-ingredient-analyzer.vercel.app",
-            /\.vercel\.app$/,
-          ]
-        : [
-            "http://localhost:3000",
-            "http://localhost:5173",
-            "http://localhost:4173",
-            "http://127.0.0.1:5173",
-          ],
-    credentials: true,
-  })
-);
+const allowedOrigins =
+  env.NODE_ENV === "production"
+    ? [
+        "https://smart-ingredient-analyzer.vercel.app",
+        "https://ai-ingredient-analyzer.vercel.app",
+        /\.vercel\.app$/,
+      ]
+    : [
+        "http://localhost:8080",   // the nginx container from docker compose
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://localhost:4173",
+        "http://127.0.0.1:5173",
+      ];
 
-// Body parser
-app.use(bodyParser.json({ limit: "10mb" }));
+app.use(cors({ origin: allowedOrigins, credentials: true }));
 
-// Request timing middleware
+app.use(express.json({ limit: IMAGE_LIMITS.maxBodySize }));
+
 app.use((req, res, next) => {
   req.startTime = Date.now();
+  req.id = crypto.randomUUID();
   next();
 });
 
 // ============= ROUTES =============
 
 app.get("/health", (req, res) => {
-  res.json({ status: "OK", timestamp: new Date().toISOString() });
+  res.json({
+    status: "OK",
+    timestamp: new Date().toISOString(),
+    ocr: geminiOcrEnabled ? "gemini-vision + tesseract" : "tesseract",
+    model: env.GROQ_MODEL,
+  });
 });
 
-app.post("/api/analyze", async (req, res, next) => {
+app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
   try {
     const startTime = Date.now();
 
-    // Validate request body
     const bodyValidation = Validators.validateRequestBody(req);
-    if (!bodyValidation.valid) {
-      console.error(`❌ ${bodyValidation.error}`);
-      return res.status(400).json(bodyValidation);
-    }
+    if (!bodyValidation.valid) return res.status(400).json(bodyValidation);
 
     const { image, fastMode = true, isMobile = false } = req.body;
 
-    // Validate image field
     const imageValidation = Validators.validateImage(image);
-    if (!imageValidation.valid) {
-      console.error(`❌ ${imageValidation.error}`);
-      return res.status(400).json(imageValidation);
+    if (!imageValidation.valid) return res.status(400).json(imageValidation);
+
+    const base64Data = image.includes(",") ? image.split(",")[1] : image;
+
+    const base64Validation = Validators.validateBase64(base64Data);
+    if (!base64Validation.valid) return res.status(400).json(base64Validation);
+
+    const imageBuffer = Buffer.from(base64Data, "base64");
+
+    const bufferValidation = Validators.validateImageBuffer(imageBuffer);
+    if (!bufferValidation.valid) {
+      return res.status(bufferValidation.statusCode || 400).json(bufferValidation);
     }
 
-    // Extract and validate base64
-    let imageBuffer;
-    try {
-      const base64Data = image.includes(",") ? image.split(",")[1] : image;
+    logger.info("analyze request received", {
+      requestId: req.id,
+      bytes: imageBuffer.length,
+      format: bufferValidation.format,
+      isMobile,
+      fastMode,
+    });
 
-      const base64Validation = Validators.validateBase64(base64Data);
-      if (!base64Validation.valid) {
-        console.error(`❌ ${base64Validation.error}`);
-        return res.status(400).json(base64Validation);
-      }
+    // Cache hit on the exact image skips OCR, which is the expensive half of
+    // the pipeline (seconds, versus a few hundred milliseconds for the model).
+    const imageKey = cacheManager.generateImageKey(imageBuffer);
+    const cachedByImage = cacheManager.get(imageKey);
+    if (cachedByImage) {
+      logger.info("cache hit", { requestId: req.id, on: "image" });
+      return res.json({ ...cachedByImage, cached: true, cacheHit: "image" });
+    }
 
-      imageBuffer = Buffer.from(base64Data, "base64");
+    const ocrResult = await ocrService.processImage(imageBuffer, { isMobile });
 
-      const bufferValidation = Validators.validateImageBuffer(imageBuffer);
-      if (!bufferValidation.valid) {
-        console.error(`❌ ${bufferValidation.error}`);
-        return res
-          .status(bufferValidation.statusCode || 400)
-          .json(bufferValidation);
-      }
-    } catch (bufferError) {
-      console.error("❌ Buffer creation error:", bufferError.message);
-      return res.status(400).json({
-        error: "Invalid image data format",
-        code: "INVALID_IMAGE_DATA",
-        details: bufferError.message,
+    const ingredientsText = AnalysisHelpers.extractIngredients(ocrResult.text);
+    const ingredientsValidation = Validators.validateIngredients(ingredientsText);
+
+    if (!ingredientsValidation.valid) {
+      throw new AppError(ingredientsValidation.error, {
+        code: ingredientsValidation.code,
+        statusCode: 422,
+        details: {
+          ocrMethod: ocrResult.method,
+          ocrConfidence: ocrResult.confidence,
+          extractedLength: ingredientsText.length,
+        },
       });
     }
 
-    // Log image size for debugging
-    console.log(
-      `📊 Image size: ${(imageBuffer.length / 1024).toFixed(
-        1
-      )}KB, buffer length: ${imageBuffer.length}`
-    );
-
-    // Validate image size limits
-    const maxSizeBytes = 15 * 1024 * 1024; // 15MB for higher quality images
-    if (imageBuffer.length > maxSizeBytes) {
-      console.error(`❌ Image too large: ${imageBuffer.length} bytes`);
-      return res.status(413).json({
-        error: "Image file too large",
-        code: "IMAGE_TOO_LARGE",
-        maxSize: "15MB",
-      });
+    const textKey = cacheManager.generateKey(ingredientsText);
+    const cachedByText = cacheManager.get(textKey);
+    if (cachedByText) {
+      logger.info("cache hit", { requestId: req.id, on: "text" });
+      cacheManager.set(imageKey, cachedByText);
+      return res.json({ ...cachedByText, cached: true, cacheHit: "text" });
     }
 
-    const minSizeBytes = 1024; // 1KB minimum
-    if (imageBuffer.length < minSizeBytes) {
-      console.error(`❌ Image too small: ${imageBuffer.length} bytes`);
-      return res.status(400).json({
-        error: "Image file too small",
-        code: "IMAGE_TOO_SMALL",
-        minSize: "1KB",
-      });
-    }
+    const groqResult = await groqService.analyze(ingredientsText, { isMobile, fastMode });
 
-    let bestOcrResult;
-    try {
-      console.log("🔍 Starting OCR processing...");
+    // Allergens and the health score are computed here, not asked of the
+    // model: same label in, same flags out, every time.
+    const { allergens, details: allergenDetails } =
+      AnalysisHelpers.detectAllergenDetails(ingredientsText);
+    const healthScore = AnalysisHelpers.calculateHealthScore(groqResult.analysis);
+    const harmfulIngredients = AnalysisHelpers.detectHarmfulIngredients(groqResult.analysis);
 
-      // Try fast mode first
-      try {
-        const processedBuffer = await ultraFastPreprocess(
-          imageBuffer,
-          isMobile
-        );
-        bestOcrResult = await performSmartOCR(processedBuffer);
-        console.log("✅ Fast OCR mode successful");
-      } catch (fastError) {
-        console.log(
-          `⚠️ Fast mode failed: ${fastError.message}, trying standard mode...`
-        );
+    const result = {
+      ingredientsText,
+      analysis: groqResult.analysis,
+      healthScore,
+      allergens,
+      allergenDetails,
+      harmfulIngredients,
+      ocrConfidence: ocrResult.confidence,
+      ocrMethod: ocrResult.method,
+      processingTime: Date.now() - startTime,
+      aiTime: groqResult.aiTime,
+      llmAttempts: groqResult.attempts,
+      droppedRows: groqResult.droppedRows,
+      fastMode,
+      isMobile,
+      cached: false,
+    };
 
-        // Fallback to standard mode
-        const processedImages = await preprocessImage(imageBuffer);
-        bestOcrResult = await performOCRWithMultipleVersions(processedImages);
-        console.log("✅ Standard OCR mode successful");
-      }
+    cacheManager.set(textKey, result);
+    cacheManager.set(imageKey, result);
 
-      if (!bestOcrResult) {
-        console.error("❌ OCR returned no results");
-        return res
-          .status(400)
-          .json({ error: "OCR failed", code: "OCR_FAILED" });
-      }
+    logger.info("analyze complete", {
+      requestId: req.id,
+      totalMs: result.processingTime,
+      ocrMs: ocrResult.processingTime,
+      aiMs: groqResult.aiTime,
+      ocrMethod: ocrResult.method,
+      ingredients: groqResult.analysis.length,
+      allergens,
+    });
 
-      if (!bestOcrResult.text) {
-        console.error("❌ OCR returned empty text");
-        return res.status(400).json({
-          error: "No text detected in image",
-          code: "NO_TEXT_DETECTED",
-        });
-      }
-    } catch (ocrError) {
-      console.error("❌ OCR processing failed:", ocrError.message);
-      return res.status(400).json({
-        error: ocrError.message || "Unable to process image",
-        code: "OCR_PROCESSING_FAILED",
-      });
-    }
-
-    // Extract ingredients
-    const ingredientsOnly = AnalysisHelpers.extractIngredients(
-      bestOcrResult.text
-    );
-
-    let finalIngredients; // <-- declare once in parent scope
-
-    // Validate ingredients
-    if (!ingredientsOnly || ingredientsOnly.length < 5) {
-      const fallbackIngredients = bestOcrResult.text
-        .replace(/nutritional information.*$/i, "")
-        .replace(/serving size.*$/i, "")
-        .replace(/manufactured.*$/i, "")
-        .trim();
-
-      if (!fallbackIngredients || fallbackIngredients.length < 10) {
-        console.error("❌ Insufficient ingredients extracted");
-        return res.status(400).json({
-          error:
-            "No ingredient list found in image. Please focus on the ingredients section of the food label.",
-          code: "INSUFFICIENT_INGREDIENTS",
-          extractedText: ingredientsOnly,
-          debug: {
-            originalText: bestOcrResult.text,
-            extractedLength: ingredientsOnly?.length || 0,
-            ocrMethod: bestOcrResult.method,
-            ocrConfidence: bestOcrResult.confidence,
-          },
-        });
-      }
-
-      // ✅ assign here
-      finalIngredients = fallbackIngredients;
-    } else {
-      // ✅ assign here
-      finalIngredients = ingredientsOnly;
-    }
-
-    // from here onwards finalIngredients is guaranteed defined
-    const cacheKey = cacheManager.generateKey(finalIngredients);
-    const cachedResult = cacheManager.get(cacheKey);
-    // ... rest of your logic
-
-    if (cachedResult) {
-      console.log("✅ Returning cached result");
-      return res.json({ ...cachedResult, cached: true });
-    }
-
-    // Groq Analysis
-    console.log("🤖 Starting Groq AI analysis...");
-    const aiStartTime = Date.now();
-
-    try {
-      const groqResult = await groqService.analyze(finalIngredients, {
-        isMobile,
-        fastMode,
-      });
-
-      const aiTime = Date.now() - aiStartTime;
-
-      // Post-process analysis
-      const allergens = AnalysisHelpers.detectAllergens(finalIngredients);
-      const healthScore = AnalysisHelpers.calculateHealthScore(
-        groqResult.analysis
-      );
-      const harmfulDetected = AnalysisHelpers.detectHarmfulIngredients(
-        groqResult.analysis
-      );
-
-      const totalTime = Date.now() - startTime;
-
-      const result = {
-        ingredientsText: finalIngredients,
-        analysis: groqResult.analysis,
-        healthScore,
-        allergens,
-        harmfulIngredients: harmfulDetected,
-        ocrConfidence: bestOcrResult.confidence,
-        ocrMethod: bestOcrResult.method,
-        processingTime: totalTime,
-        fastMode,
-        isMobile,
-        cached: false,
-        aiTime,
-      };
-
-      // Cache result
-      cacheManager.set(cacheKey, result);
-
-      console.log(
-        `✅ Analysis complete in ${totalTime}ms (AI: ${aiTime}ms, OCR: ${
-          totalTime - aiTime
-        }ms)`
-      );
-      res.json(result);
-    } catch (groqError) {
-      console.error("❌ Groq service error:", groqError.message);
-
-      // Re-throw with context
-      const error = new Error(groqError.message);
-      error.code = "GROQ_API_ERROR";
-      throw error;
-    }
+    res.json(result);
   } catch (error) {
     next(error);
   }
 });
 
-// 404 handler
-app.all("*", (req, res) => {
-  res.status(404).json({ error: "Endpoint not found" });
+app.use((req, res) => {
+  res.status(404).json({ error: "Endpoint not found", code: "NOT_FOUND" });
 });
 
-// Global error handler
-app.use((error, req, res, next) => {
-  ErrorHandler.handle(error, req, res);
+app.use((error, req, res, next) => ErrorHandler.handle(error, req, res));
+
+// ============= LIFECYCLE =============
+
+// An unhandled rejection would otherwise terminate the process on Node 20+
+// with no explanation of what failed.
+process.on("unhandledRejection", (reason) => {
+  logger.error("unhandled promise rejection", {
+    reason: reason instanceof Error ? reason.message : String(reason),
+  });
 });
 
-// ============= GRACEFUL SHUTDOWN =============
-
-process.on("SIGTERM", () => {
-  console.log("🛑 SIGTERM received, shutting down gracefully...");
+function shutdown(signal) {
+  logger.info("shutting down", { signal });
   cacheManager.close();
   process.exit(0);
-});
+}
 
-process.on("SIGINT", () => {
-  console.log("🛑 SIGINT received, shutting down gracefully...");
-  cacheManager.close();
-  process.exit(0);
-});
-
-// ============= START SERVER =============
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
 
 app.listen(PORT, () => {
-  console.log(`🚀 Smart Food Analyzer API running on port ${PORT}`);
-  console.log(`📍 Environment: ${env.NODE_ENV}`);
-  console.log(`🤖 AI Model: ${env.GROQ_MODEL}`);
+  logger.info("server listening", {
+    port: PORT,
+    env: env.NODE_ENV,
+    model: env.GROQ_MODEL,
+    geminiOcr: geminiOcrEnabled,
+  });
 });
 
 export default app;
