@@ -114,13 +114,15 @@ hundreds of thousands of chunks. `back-end/rag/retriever.js`
 
 ![Upload screen](./upload.png)
 
-![Analysis result](./dashboard.png)
+![Home screen](./dashboard.png)
 
-> Both screenshots — and the deployment that used to be linked here — show the
-> **pre-retrieval** build: bare Good/Bad/Neutral verdicts, no citations, no
-> `uncovered` list, and a "Powered by Gemini AI" badge the code no longer earns.
-> They are the version this README argues against. Run it locally instead:
-> [Setup](#setup) takes about two minutes and needs no account of any kind.
+> Both screenshots are of the **pre-retrieval** build — note the "Powered by
+> Gemini AI" badge, which the code no longer earns. Neither shows an analysis
+> result, so **there is currently no screenshot of the output this README
+> describes**: the cited verdicts, the `uncovered` list, and the refusals. The
+> deployment that used to be linked here runs that same older build.
+> Run it locally instead: [Setup](#setup) takes about two minutes and needs no
+> account of any kind.
 > The full detail is in [Notes and limitations](#notes-and-limitations).
 
 ## Where this came from
