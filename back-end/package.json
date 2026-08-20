@@ -8,13 +8,16 @@
     "dev": "node --watch server.js",
     "test": "node --test tests/*.test.js",
     "ocr:benchmark": "node scripts/ocr-benchmark.js",
-    "smoke": "node scripts/smoke-analyze.js"
+    "smoke": "node scripts/smoke-analyze.js",
+    "eval": "node rag/eval/run-eval.js",
+    "ingest": "node rag/ingest.js"
   },
   "keywords": [],
   "author": "",
   "license": "MIT",
   "description": "Express API that OCRs a food label and returns a schema-validated ingredient analysis.",
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "cors": "^2.8.5",
     "dotenv": "^16.5.0",
     "express": "^4.21.2",

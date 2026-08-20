@@ -8,3 +8,9 @@ dist/
 
 *.log
 .DS_Store
+
+# transformers.js model cache (downloaded on first run)
+back-end/.models/
+
+# raw taxonomy snapshots used by rag/ingest.js
+back-end/rag/.taxonomy-cache/

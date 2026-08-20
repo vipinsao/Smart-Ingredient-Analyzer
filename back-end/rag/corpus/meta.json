@@ -1,0 +1,19 @@
+{
+  "model": "Xenova/all-MiniLM-L6-v2",
+  "dimensions": 384,
+  "maxChunkTokens": 110,
+  "passages": 727,
+  "chunks": 839,
+  "byKind": {
+    "additive": 785,
+    "additive-class": 28,
+    "allergen": 26
+  },
+  "sources": {
+    "additives": "https://static.openfoodfacts.org/data/taxonomies/additives.json",
+    "additivesClasses": "https://static.openfoodfacts.org/data/taxonomies/additives_classes.json",
+    "allergens": "https://static.openfoodfacts.org/data/taxonomies/allergens.json"
+  },
+  "licence": "ODbL-1.0 (Open Food Facts)",
+  "builtAt": "2026-08-20"
+}
