@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { CacheManager } from "../utils/cache.js";
+import { CacheManager, ttlForResult } from "../utils/cache.js";
 import { CACHE_CONFIG } from "../configuration/constants.js";
 
 test("the text key is stable and case-insensitive", () => {
@@ -62,4 +62,38 @@ test("the cache is bounded and evicts rather than failing when full", () => {
   // The oldest was evicted, which is the half that keeps memory flat.
   assert.equal(manager.get("key-0"), undefined);
   manager.close();
+});
+
+// ---------------------------------------------------------------------------
+// A result that came back unsourced is a fact about the provider, not about the
+// label, and must not be served for the label's full 48 hours.
+// ---------------------------------------------------------------------------
+
+test("ttlForResult gives a degraded result the short lifetime and everything else the default", () => {
+  assert.equal(ttlForResult({ grounded: false }), CACHE_CONFIG.degradedTTL);
+  assert.equal(ttlForResult({ grounded: true }), undefined);
+  assert.equal(ttlForResult(undefined), undefined);
+  assert.ok(CACHE_CONFIG.degradedTTL < CACHE_CONFIG.stdTTL, "the degraded TTL must be shorter than the default");
+});
+
+test("setResult stores a degraded result under the short TTL and expires it", async () => {
+  const cache = new CacheManager();
+  try {
+    cache.setResult("sourced", { grounded: true, healthScore: 72 });
+    cache.setResult("degraded", { grounded: false, degradedReason: "provider was uncitable" });
+
+    // node-cache reports the absolute expiry, so the two are compared against
+    // each other rather than against a wall-clock guess.
+    const sourcedTtl = cache.cache.getTtl("sourced");
+    const degradedTtl = cache.cache.getTtl("degraded");
+    assert.ok(degradedTtl < sourcedTtl, "a degraded entry must expire long before a sourced one");
+    assert.ok(sourcedTtl - degradedTtl > (CACHE_CONFIG.stdTTL - CACHE_CONFIG.degradedTTL - 5) * 1000);
+
+    // And it really expires, rather than merely claiming a shorter TTL.
+    cache.set("brief", { grounded: false }, 1);
+    await new Promise((resolve) => setTimeout(resolve, 1400));
+    assert.equal(cache.get("brief"), undefined);
+  } finally {
+    cache.close();
+  }
 });

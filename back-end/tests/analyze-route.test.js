@@ -52,8 +52,8 @@ async function waitForHealth(port, deadlineMs = 60000) {
   }
 }
 
-async function withServer(run, { apiKey = "stub-key-not-used" } = {}) {
-  const stub = createStubServer();
+async function withServer(run, { apiKey = "stub-key-not-used", stubOptions = {}, env = {} } = {}) {
+  const stub = createStubServer(stubOptions);
   await new Promise((resolve) => stub.listen(0, "127.0.0.1", resolve));
   const stubPort = stub.address().port;
   const port = 5900 + Math.floor(Math.random() * 90);
@@ -67,6 +67,7 @@ async function withServer(run, { apiKey = "stub-key-not-used" } = {}) {
       GROQ_API_KEY: apiKey,
       GROQ_BASE_URL: `http://127.0.0.1:${stubPort}/v1/chat/completions`,
       GEMINI_API_KEY: "",
+      ...env,
     },
     stdio: ["ignore", "ignore", "inherit"],
   });
@@ -176,4 +177,61 @@ test("SIGTERM shuts the process down instead of leaving Tesseract workers behind
 
     assert.equal(result.code, 0, `expected a clean exit, got ${JSON.stringify(result)}`);
   });
+});
+
+// ---------------------------------------------------------------------------
+// A degraded answer must not outlive the failure that produced it.
+//
+// The result written to the cache carries `grounded: false` and a
+// `degradedReason`, and it used to be stored under the same 48-hour TTL as a
+// fully sourced answer, with no invalidation path. One uncitable reply from the
+// provider therefore pinned an unsourced answer to that photo - and to every
+// photo yielding the same ingredient text - for two days after the provider
+// recovered. Only a restart cleared it.
+// ---------------------------------------------------------------------------
+
+test("a degraded result is cached for a moment, not for two days", { timeout: 180000 }, async () => {
+  await withServer(
+    async ({ port }) => {
+      await waitForHealth(port);
+
+      const first = await analyze(port, "degraded");
+      assert.equal(first.status, 200);
+      assert.equal(first.payload.grounded, false, "the citationless stub must drive the degraded path");
+      assert.ok(first.payload.degradedReason, "a degraded answer says so in the payload");
+      assert.equal(first.payload.cached, false);
+
+      // Cached briefly: an outage must not re-run OCR for every retry.
+      const second = await analyze(port, "degraded");
+      assert.equal(second.payload.cached, true);
+
+      // And then gone. DEGRADED_CACHE_TTL is one second for this server, so
+      // this is the entry expiring rather than a timing guess.
+      await new Promise((resolve) => setTimeout(resolve, 1400));
+
+      const third = await analyze(port, "degraded");
+      assert.equal(third.payload.cached, false, "a degraded answer must not outlive its TTL");
+      assert.ok(third.payload.timings.ocr > 0, "and the re-analysis is a real one");
+    },
+    { stubOptions: { citations: false }, env: { DEGRADED_CACHE_TTL: "1" } }
+  );
+});
+
+test("a sourced result keeps the full cache lifetime", { timeout: 180000 }, async () => {
+  // The control for the test above: the short TTL applies to degraded results
+  // only, so this must still be a hit well after one second.
+  await withServer(
+    async ({ port }) => {
+      await waitForHealth(port);
+
+      const first = await analyze(port, "sourced-ttl");
+      assert.equal(first.payload.grounded, true);
+
+      await new Promise((resolve) => setTimeout(resolve, 1400));
+
+      const second = await analyze(port, "sourced-ttl");
+      assert.equal(second.payload.cached, true, "a sourced answer is not on the degraded TTL");
+    },
+    { env: { DEGRADED_CACHE_TTL: "1" } }
+  );
 });

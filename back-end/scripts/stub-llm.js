@@ -24,14 +24,10 @@ import http from "node:http";
  * block. A stub that failed citation validation would send the route down the
  * retry path and measure the wrong thing.
  */
-export function buildStubCompletion(prompt) {
-  const ids = [...new Set([...String(prompt).matchAll(/\[(C\d+)\]/g)].map((m) => m[1]))];
-  const listBlock = String(prompt).split("INGREDIENTS TO ANALYSE:")[1] || "";
-  const ingredients = listBlock
-    .split("\n")
-    .filter((line) => line.startsWith("- "))
-    .map((line) => line.slice(2).trim())
-    .filter(Boolean);
+export function buildStubCompletion(prompt, { citations = true } = {}) {
+  const text = String(prompt);
+  const ids = citations ? [...new Set([...text.matchAll(/\[(C\d+)\]/g)].map((m) => m[1]))] : [];
+  const ingredients = readIngredients(text);
 
   const rows = ingredients.map((ingredient, index) => ({
     ingredient,
@@ -44,7 +40,42 @@ export function buildStubCompletion(prompt) {
   return JSON.stringify(rows);
 }
 
-export function createStubServer() {
+/**
+ * Both prompts, because the stub has to answer both.
+ *
+ * The grounded prompt lists its ingredients one per line under "INGREDIENTS TO
+ * ANALYSE:"; the ungrounded one pastes the raw OCR text under "Ingredients to
+ * analyze:". A stub that only understood the first answered the ungrounded
+ * prompt with an empty array, which is a hard 502 - so the degraded path could
+ * not be exercised without a provider key at all.
+ */
+function readIngredients(text) {
+  const groundedBlock = text.split("INGREDIENTS TO ANALYSE:")[1];
+  if (groundedBlock) {
+    return groundedBlock
+      .split("\n")
+      .filter((line) => line.startsWith("- "))
+      .map((line) => line.slice(2).trim())
+      .filter(Boolean);
+  }
+
+  const ungroundedBlock = (text.split("Ingredients to analyze:")[1] || "").split("Expected JSON format:")[0];
+  return ungroundedBlock
+    .split(/[,;\n]/)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 3)
+    .slice(0, 25);
+}
+
+/**
+ * @param {{citations?: boolean}} options
+ *        `citations: false` answers every prompt with well-formed, schema-valid
+ *        verdicts that cite nothing. The grounded path rejects those twice and
+ *        raises GROUNDED_ANALYSIS_FAILED, the ungrounded path accepts them, so
+ *        this is how a test reaches a real `grounded: false` response without a
+ *        provider key and without breaking the transport.
+ */
+export function createStubServer({ citations = true } = {}) {
   return http.createServer((req, res) => {
     let body = "";
     req.on("data", (chunk) => { body += chunk; });
@@ -58,7 +89,7 @@ export function createStubServer() {
       }
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({
-        choices: [{ message: { role: "assistant", content: buildStubCompletion(prompt) } }],
+        choices: [{ message: { role: "assistant", content: buildStubCompletion(prompt, { citations }) } }],
       }));
     });
   });

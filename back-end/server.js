@@ -316,7 +316,10 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
       cacheLookups.add(1, { result: "hit", key: "text" });
       const timings = timer.report();
       logger.info("cache hit", { requestId: req.id, on: "text", timings });
-      cacheManager.set(imageKey, cachedByText);
+      // Promoted under the cached result's own TTL policy: a degraded answer
+      // reached through the text key must not acquire a 48-hour life by being
+      // copied onto the image key.
+      cacheManager.setResult(imageKey, cachedByText);
       return res.json({
         ...cachedByText,
         cached: true,
@@ -379,8 +382,11 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
       cached: false,
     };
 
-    cacheManager.set(textKey, result);
-    cacheManager.set(imageKey, result);
+    // setResult, not set: a result that fell back to the ungrounded path is a
+    // snapshot of a provider that was misbehaving, and is cached for a minute
+    // rather than for two days.
+    cacheManager.setResult(textKey, result);
+    cacheManager.setResult(imageKey, result);
 
     logger.info("analyze complete", {
       requestId: req.id,

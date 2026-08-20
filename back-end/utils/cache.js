@@ -10,6 +10,19 @@ import NodeCache from "node-cache";
 import crypto from "crypto";
 import { CACHE_CONFIG } from "../configuration/constants.js";
 
+/**
+ * The cache TTL a result qualifies for.
+ *
+ * `undefined` means the configured default. A result carrying
+ * `grounded: false` is the model's own unsourced answer, produced because
+ * something was broken at that moment; it is cached briefly so a retry storm
+ * does not re-run OCR every time, and no longer, so it cannot outlive the
+ * failure that caused it.
+ */
+export function ttlForResult(result) {
+  return result?.grounded === false ? CACHE_CONFIG.degradedTTL : undefined;
+}
+
 export class CacheManager {
   constructor() {
     this.cache = new NodeCache(CACHE_CONFIG);
@@ -39,15 +52,28 @@ export class CacheManager {
    * LRU, but bounded and predictable, and the TTL already means entries are
    * disposable.
    */
-  set(key, value) {
+  set(key, value, ttl) {
     try {
-      this.cache.set(key, value);
+      this.cache.set(key, value, ...(ttl === undefined ? [] : [ttl]));
     } catch (error) {
       if (error?.errorcode !== "ECACHEFULL") throw error;
       const [oldest] = this.cache.keys();
       if (oldest !== undefined) this.cache.del(oldest);
-      this.cache.set(key, value);
+      this.cache.set(key, value, ...(ttl === undefined ? [] : [ttl]));
     }
+  }
+
+  /**
+   * Store an analysis result under the TTL its own honesty earns.
+   *
+   * The policy lives here rather than at the call sites because there are
+   * three of them - the two writes that follow a fresh analysis and the one
+   * that promotes a text-key hit onto the image key - and a degraded result
+   * written through any of them under the default TTL puts the whole class of
+   * bug straight back.
+   */
+  setResult(key, result) {
+    this.set(key, result, ttlForResult(result));
   }
 
   has(key) {

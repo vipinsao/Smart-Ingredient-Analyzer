@@ -40,6 +40,22 @@ export const ALLERGENS = {
 export const CACHE_CONFIG = {
   stdTTL: 172800, // 48 hours
   checkperiod: 3600, // 1 hour
+  /**
+   * TTL for a result that came back `grounded: false`.
+   *
+   * A degraded answer is a fact about the provider a second ago, not a fact
+   * about the label. Storing it under the 48-hour TTL meant one uncitable
+   * reply, or one request that arrived before the corpus finished loading,
+   * pinned an unsourced answer to that photo - and to every photo yielding
+   * the same ingredient text - for two days after the condition cleared, with
+   * no invalidation path short of a restart.
+   *
+   * Not caching it at all would be correct and would also re-run OCR, the
+   * expensive half of the pipeline, for every retry during an outage. A short
+   * TTL keeps that protection and caps the staleness at a minute. Overridable
+   * so tests can watch an entry expire without sleeping for one.
+   */
+  degradedTTL: limitFromEnv("DEGRADED_CACHE_TTL", 60),
   // Bounded, because the key is a content hash and the caller chooses the
   // content. Appending one byte after a JPEG's EOI marker changes the sha256
   // without changing a pixel - scripts/profile-analyze.js relies on exactly
