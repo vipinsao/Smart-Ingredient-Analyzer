@@ -1,0 +1,142 @@
+{
+  "measuredAt": "2026-08-20T07:39:11.753Z",
+  "corpus": {
+    "model": "Xenova/all-MiniLM-L6-v2",
+    "dimensions": 384,
+    "maxChunkTokens": 110,
+    "passages": 727,
+    "chunks": 839,
+    "byKind": {
+      "additive": 785,
+      "additive-class": 28,
+      "allergen": 26
+    },
+    "sources": {
+      "additives": "https://static.openfoodfacts.org/data/taxonomies/additives.json",
+      "additivesClasses": "https://static.openfoodfacts.org/data/taxonomies/additives_classes.json",
+      "allergens": "https://static.openfoodfacts.org/data/taxonomies/allergens.json"
+    },
+    "licence": "ODbL-1.0 (Open Food Facts)",
+    "builtAt": "2026-08-20"
+  },
+  "questions": {
+    "inCorpus": 40,
+    "outOfCorpus": 18
+  },
+  "recall": {
+    "dense": {
+      "1": 0.475,
+      "3": 0.725,
+      "5": 0.775
+    },
+    "lexical": {
+      "1": 0.825,
+      "3": 0.95,
+      "5": 0.95
+    },
+    "hybrid": {
+      "1": 0.825,
+      "3": 0.95,
+      "5": 0.95
+    }
+  },
+  "fusionWeightSweep": {
+    "0": {
+      "1": 0.825,
+      "3": 0.95,
+      "5": 0.95
+    },
+    "1": {
+      "1": 0.7,
+      "3": 0.925,
+      "5": 0.95
+    },
+    "0.2": {
+      "1": 0.85,
+      "3": 0.95,
+      "5": 0.95
+    },
+    "0.3": {
+      "1": 0.825,
+      "3": 0.95,
+      "5": 0.95
+    },
+    "0.5": {
+      "1": 0.825,
+      "3": 0.95,
+      "5": 0.95
+    },
+    "0.7": {
+      "1": 0.825,
+      "3": 0.95,
+      "5": 0.95
+    }
+  },
+  "denseFusionWeight": 0.5,
+  "byCategory": {
+    "code": {
+      "total": 10,
+      "hit5": 10
+    },
+    "name": {
+      "total": 10,
+      "hit5": 10
+    },
+    "paraphrase": {
+      "total": 10,
+      "hit5": 8
+    },
+    "class": {
+      "total": 6,
+      "hit5": 6
+    },
+    "allergen": {
+      "total": 4,
+      "hit5": 4
+    }
+  },
+  "abstention": {
+    "configured": {
+      "cosine": 0.42,
+      "lexical": 8.5,
+      "truePositive": 13,
+      "falsePositive": 0,
+      "falseNegative": 5,
+      "precision": 1,
+      "recall": 0.7222222222222222,
+      "f1": 0.8387096774193548
+    },
+    "byCategory": {
+      "out-of-corpus": {
+        "total": 10,
+        "abstained": 8
+      },
+      "out-of-corpus-ingredient": {
+        "total": 8,
+        "abstained": 5
+      }
+    },
+    "best": {
+      "truePositive": 15,
+      "falsePositive": 1,
+      "falseNegative": 3,
+      "precision": 0.9375,
+      "recall": 0.8333333333333334,
+      "f1": 0.8823529411764706,
+      "cosine": 0.49000000000000027,
+      "lexical": 8.5
+    }
+  },
+  "latencyMs": {
+    "p50": 6.2138499999999794,
+    "p95": 8.315079999999966,
+    "max": 8.416410000000042
+  },
+  "samplePrompt": {
+    "label": "Water, Sugar, Jaggery, Tomato Paste, Tamarind (5%), Iodised Salt, Spices and Condiments, Stabilizers (INS1422, INS415), Acidity Regulators (INS260, INS334) and Preservative (INS211).",
+    "ingredientsParsed": 15,
+    "abstainedBeforeModel": 5,
+    "contextPassages": 24,
+    "characters": 7448
+  }
+}

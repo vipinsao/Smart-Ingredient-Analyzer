@@ -23,9 +23,46 @@ jobs:
 
       - run: npm ci
 
-      # No API key is needed: every test here covers pure logic (validation,
-      # schema coercion, image transforms) or stubs the model call.
+      # No API key needed: every test covers pure logic (validation, schema
+      # coercion, image transforms, chunking, BM25, citation checking) or stubs
+      # the model call. The lexical retrieval tests run against the committed
+      # corpus and need no embedding model.
       - run: npm test
+
+  retrieval-eval:
+    name: retrieval evaluation (recall, ablation, abstention)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: back-end
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: back-end/package-lock.json
+
+      # The embedding model is ~87MB and is fetched from the Hugging Face hub on
+      # first use. Cache it so the eval does not re-download it every run.
+      - uses: actions/cache@v4
+        with:
+          path: back-end/.models
+          key: transformers-Xenova-all-MiniLM-L6-v2
+
+      - run: npm ci
+
+      # Fails the build if hybrid recall@5 drops below the floor set in
+      # rag/eval/run-eval.js. Needs no API key: everything measured here
+      # happens before the model is called.
+      - run: npm run eval
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: retrieval-eval-results
+          path: back-end/rag/eval/results.json
 
   frontend:
     name: front-end (install + lint + build)

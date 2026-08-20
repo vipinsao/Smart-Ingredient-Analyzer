@@ -1,0 +1,433 @@
+{
+  "about": "Labelled retrieval questions for the Open Food Facts corpus. `expectedPassages` lists the passage ids that answer the question; a retrieval counts as a hit when any returned chunk belongs to one of them. Questions with an empty list are out of corpus and the system is expected to abstain. Questions in the out-of-corpus-ingredient category are whole-food ingredient names taken from a real label; the Open Food Facts additive and allergen taxonomies do not describe them, so the system should abstain on all of them.",
+  "questions": [
+    {
+      "id": "q01",
+      "category": "code",
+      "question": "E211",
+      "expectedPassages": [
+        "additive:en:e211"
+      ]
+    },
+    {
+      "id": "q02",
+      "category": "code",
+      "question": "INS 415",
+      "expectedPassages": [
+        "additive:en:e415"
+      ]
+    },
+    {
+      "id": "q03",
+      "category": "code",
+      "question": "E 621",
+      "expectedPassages": [
+        "additive:en:e621"
+      ]
+    },
+    {
+      "id": "q04",
+      "category": "code",
+      "question": "E951",
+      "expectedPassages": [
+        "additive:en:e951"
+      ]
+    },
+    {
+      "id": "q05",
+      "category": "code",
+      "question": "e102",
+      "expectedPassages": [
+        "additive:en:e102"
+      ]
+    },
+    {
+      "id": "q06",
+      "category": "code",
+      "question": "E250",
+      "expectedPassages": [
+        "additive:en:e250"
+      ]
+    },
+    {
+      "id": "q07",
+      "category": "code",
+      "question": "E407",
+      "expectedPassages": [
+        "additive:en:e407"
+      ]
+    },
+    {
+      "id": "q08",
+      "category": "code",
+      "question": "E471",
+      "expectedPassages": [
+        "additive:en:e471"
+      ]
+    },
+    {
+      "id": "q09",
+      "category": "code",
+      "question": "INS1422",
+      "expectedPassages": [
+        "additive:en:e1422"
+      ]
+    },
+    {
+      "id": "q10",
+      "category": "code",
+      "question": "additive E330",
+      "expectedPassages": [
+        "additive:en:e330"
+      ]
+    },
+    {
+      "id": "q11",
+      "category": "name",
+      "question": "sodium benzoate",
+      "expectedPassages": [
+        "additive:en:e211"
+      ]
+    },
+    {
+      "id": "q12",
+      "category": "name",
+      "question": "monosodium glutamate",
+      "expectedPassages": [
+        "additive:en:e621"
+      ]
+    },
+    {
+      "id": "q13",
+      "category": "name",
+      "question": "xanthan gum",
+      "expectedPassages": [
+        "additive:en:e415"
+      ]
+    },
+    {
+      "id": "q14",
+      "category": "name",
+      "question": "aspartame",
+      "expectedPassages": [
+        "additive:en:e951"
+      ]
+    },
+    {
+      "id": "q15",
+      "category": "name",
+      "question": "tartrazine",
+      "expectedPassages": [
+        "additive:en:e102"
+      ]
+    },
+    {
+      "id": "q16",
+      "category": "name",
+      "question": "carrageenan",
+      "expectedPassages": [
+        "additive:en:e407"
+      ]
+    },
+    {
+      "id": "q17",
+      "category": "name",
+      "question": "potassium sorbate",
+      "expectedPassages": [
+        "additive:en:e202"
+      ]
+    },
+    {
+      "id": "q18",
+      "category": "name",
+      "question": "ascorbic acid",
+      "expectedPassages": [
+        "additive:en:e300"
+      ]
+    },
+    {
+      "id": "q19",
+      "category": "name",
+      "question": "butylated hydroxyanisole",
+      "expectedPassages": [
+        "additive:en:e320"
+      ]
+    },
+    {
+      "id": "q20",
+      "category": "name",
+      "question": "sunset yellow FCF",
+      "expectedPassages": [
+        "additive:en:e110"
+      ]
+    },
+    {
+      "id": "q21",
+      "category": "paraphrase",
+      "question": "the sodium salt of glutamic acid, used to enhance savoury flavour",
+      "expectedPassages": [
+        "additive:en:e621"
+      ]
+    },
+    {
+      "id": "q22",
+      "category": "paraphrase",
+      "question": "a synthetic lemon yellow azo dye used as a food colouring",
+      "expectedPassages": [
+        "additive:en:e102"
+      ]
+    },
+    {
+      "id": "q23",
+      "category": "paraphrase",
+      "question": "inorganic compound NaNO2 used in processed meats",
+      "expectedPassages": [
+        "additive:en:e250"
+      ]
+    },
+    {
+      "id": "q24",
+      "category": "paraphrase",
+      "question": "a polysaccharide widely used as a food additive to thicken",
+      "expectedPassages": [
+        "additive:en:e415"
+      ]
+    },
+    {
+      "id": "q25",
+      "category": "paraphrase",
+      "question": "an additive made of monoglycerides and diglycerides used as an emulsifier",
+      "expectedPassages": [
+        "additive:en:e471"
+      ]
+    },
+    {
+      "id": "q26",
+      "category": "paraphrase",
+      "question": "the substance with chemical formula NaC7H5O2",
+      "expectedPassages": [
+        "additive:en:e211"
+      ]
+    },
+    {
+      "id": "q27",
+      "category": "paraphrase",
+      "question": "which additive did EFSA give an acceptable daily intake of 40",
+      "expectedPassages": [
+        "additive:en:e951"
+      ]
+    },
+    {
+      "id": "q28",
+      "category": "paraphrase",
+      "question": "potassium salt of sorbic acid used to stop mould",
+      "expectedPassages": [
+        "additive:en:e202"
+      ]
+    },
+    {
+      "id": "q29",
+      "category": "paraphrase",
+      "question": "caramel colour produced with sulphite and ammonia",
+      "expectedPassages": [
+        "additive:en:e150d"
+      ]
+    },
+    {
+      "id": "q30",
+      "category": "paraphrase",
+      "question": "blue synthetic dye also known as Blue 1",
+      "expectedPassages": [
+        "additive:en:e133"
+      ]
+    },
+    {
+      "id": "q31",
+      "category": "class",
+      "question": "substances that prolong shelf life by protecting food against micro-organisms",
+      "expectedPassages": [
+        "additive-class:en:preservative"
+      ]
+    },
+    {
+      "id": "q32",
+      "category": "class",
+      "question": "substances that keep oil and water mixed in a homogenous mixture",
+      "expectedPassages": [
+        "additive-class:en:emulsifier"
+      ]
+    },
+    {
+      "id": "q33",
+      "category": "class",
+      "question": "substances used to impart a sweet taste to foods",
+      "expectedPassages": [
+        "additive-class:en:sweetener"
+      ]
+    },
+    {
+      "id": "q34",
+      "category": "class",
+      "question": "what is a thickener in food",
+      "expectedPassages": [
+        "additive-class:en:thickener"
+      ]
+    },
+    {
+      "id": "q35",
+      "category": "class",
+      "question": "what does an antioxidant do in food",
+      "expectedPassages": [
+        "additive-class:en:antioxidant"
+      ]
+    },
+    {
+      "id": "q36",
+      "category": "class",
+      "question": "what is an acidity regulator",
+      "expectedPassages": [
+        "additive-class:en:acidity-regulator"
+      ]
+    },
+    {
+      "id": "q37",
+      "category": "allergen",
+      "question": "is gluten a declarable allergen",
+      "expectedPassages": [
+        "allergen:en:gluten"
+      ]
+    },
+    {
+      "id": "q38",
+      "category": "allergen",
+      "question": "milk allergen labelling",
+      "expectedPassages": [
+        "allergen:en:milk"
+      ]
+    },
+    {
+      "id": "q39",
+      "category": "allergen",
+      "question": "soybeans allergen",
+      "expectedPassages": [
+        "allergen:en:soybeans"
+      ]
+    },
+    {
+      "id": "q40",
+      "category": "allergen",
+      "question": "sulphur dioxide and sulphites allergen",
+      "expectedPassages": [
+        "allergen:en:sulphur-dioxide-and-sulphites"
+      ]
+    },
+    {
+      "id": "x01",
+      "category": "out-of-corpus",
+      "question": "who won the 1998 football world cup",
+      "expectedPassages": []
+    },
+    {
+      "id": "x02",
+      "category": "out-of-corpus",
+      "question": "how do I change a flat car tyre",
+      "expectedPassages": []
+    },
+    {
+      "id": "x03",
+      "category": "out-of-corpus",
+      "question": "what is the capital city of Peru",
+      "expectedPassages": []
+    },
+    {
+      "id": "x04",
+      "category": "out-of-corpus",
+      "question": "write a python function that reverses a linked list",
+      "expectedPassages": []
+    },
+    {
+      "id": "x05",
+      "category": "out-of-corpus",
+      "question": "how many calories are in a medium banana",
+      "expectedPassages": []
+    },
+    {
+      "id": "x06",
+      "category": "out-of-corpus",
+      "question": "is intermittent fasting effective for weight loss",
+      "expectedPassages": []
+    },
+    {
+      "id": "x07",
+      "category": "out-of-corpus",
+      "question": "what is the melting point of tungsten",
+      "expectedPassages": []
+    },
+    {
+      "id": "x08",
+      "category": "out-of-corpus",
+      "question": "how much does a Tesla Model 3 cost in India",
+      "expectedPassages": []
+    },
+    {
+      "id": "x09",
+      "category": "out-of-corpus",
+      "question": "what medication should I take for a headache",
+      "expectedPassages": []
+    },
+    {
+      "id": "x10",
+      "category": "out-of-corpus",
+      "question": "what temperature should I proof sourdough at",
+      "expectedPassages": []
+    },
+    {
+      "id": "i01",
+      "category": "out-of-corpus-ingredient",
+      "question": "water",
+      "expectedPassages": []
+    },
+    {
+      "id": "i02",
+      "category": "out-of-corpus-ingredient",
+      "question": "sugar",
+      "expectedPassages": []
+    },
+    {
+      "id": "i03",
+      "category": "out-of-corpus-ingredient",
+      "question": "jaggery",
+      "expectedPassages": []
+    },
+    {
+      "id": "i04",
+      "category": "out-of-corpus-ingredient",
+      "question": "tomato paste",
+      "expectedPassages": []
+    },
+    {
+      "id": "i05",
+      "category": "out-of-corpus-ingredient",
+      "question": "tamarind",
+      "expectedPassages": []
+    },
+    {
+      "id": "i06",
+      "category": "out-of-corpus-ingredient",
+      "question": "iodised salt",
+      "expectedPassages": []
+    },
+    {
+      "id": "i07",
+      "category": "out-of-corpus-ingredient",
+      "question": "wheat flour",
+      "expectedPassages": []
+    },
+    {
+      "id": "i08",
+      "category": "out-of-corpus-ingredient",
+      "question": "spices and condiments",
+      "expectedPassages": []
+    }
+  ]
+}
