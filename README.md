@@ -5,7 +5,7 @@ Food Facts taxonomies say about each ingredient, and returns a verdict per
 ingredient **that cites the passage it came from** — or reports that no
 authoritative source covers that ingredient, rather than inventing one.
 
-## Fastest way to see whether this is any good
+## Reproduce the numbers in six seconds
 
 ```bash
 cd back-end && npm ci && npm run eval
