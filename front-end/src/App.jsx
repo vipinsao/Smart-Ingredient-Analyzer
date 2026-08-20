@@ -394,7 +394,12 @@ function App() {
             analysis={analysis}
             healthScore={fullResults.healthScore}
             allergens={fullResults.allergens}
+            allergenDetails={fullResults.allergenDetails}
             processingTime={fullResults.processingTime}
+            uncovered={fullResults.uncovered}
+            coverage={fullResults.coverage}
+            grounded={fullResults.grounded !== false}
+            degradedReason={fullResults.degradedReason}
           />
         )}
       </div>
