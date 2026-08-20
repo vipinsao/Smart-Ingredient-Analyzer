@@ -326,6 +326,93 @@ across levels 1–4:
 | 2 | 4,021 | 0.17 – 0.35 |
 | 3 | 8,701 | 0.12 – 0.24 |
 
+### Limits and abuse
+
+This API is unauthenticated by design — it is a demo anyone can try. That makes
+every bound on it load-bearing, because the only thing standing between a
+visitor and the owner's Groq quota is a rate limiter, and the only thing
+standing between one upload and the container's single CPU is a pixel cap.
+
+An independent review found that neither of those was actually holding. Both
+were fixed, both are measured, and the measurements are reproducible:
+
+**The rate limiter was fully bypassable.** `app.set("trust proxy", 1)` does not
+verify that a proxy exists — it takes an entry from the client-supplied
+`X-Forwarded-For` header as `req.ip`. This app publishes directly
+(`docker-compose.yml` maps `5000:5000`; `front-end/nginx.conf` has no
+`proxy_pass`), so there was no proxy overwriting that header. 300 requests from
+one machine against a 20-per-15-minute budget:
+
+| configuration | allowed | blocked |
+| --- | --- | --- |
+| `trust proxy: 1`, no header | 20 | 280 |
+| `trust proxy: 1`, rotating `X-Forwarded-For` | **300** | **0** |
+| `trust proxy: false` (now the default), rotating `X-Forwarded-For` | 20 | 280 |
+
+`TRUST_PROXY` now defaults to none. **Set `TRUST_PROXY=1` when deploying behind
+Render, Fly or any single proxy** — without it every visitor shares one bucket;
+with it set wrongly there is no bucket at all. `express-rate-limit`'s own
+validator does not catch this: it errors on `true` and says nothing about `1`.
+
+**Bounding one dimension is not bounding the work.** The upload checks —
+`express.json({ limit: "12mb" })` and an 8MB cap on the decoded buffer — bound
+encoded *bytes*. Tesseract's cost tracks *pixels*, and `targetWidth()` returned
+`Math.min(width, maxWidth)`, so a tall image was never downscaled at all.
+`npm run bench:bounds`, one core, text-filled canvases:
+
+| upload | wire | pixels | before | after |
+| --- | --- | --- | --- | --- |
+| 2000×1500 | 0.39MB | 3.0M | 2000×1500, 11.4s | unchanged |
+| 2000×20000 | 5.46MB | 40.0M | **2000×20000, 126.2s** | downscaled into the 4M-pixel budget |
+| 16383×16383 | 8.30MB | 268.4M | 2000×2000, 13.4s | refused before decode |
+
+11.1× the cost of a normal label, from a file well inside the size allowance.
+
+The square case is worth reading carefully, because the obvious explanation is
+wrong: it is **not** stopped by sharp's default pixel limit. 16383² is
+268,402,689 — that limit exactly — so it passes. What saved it was the width cap
+downscaling it to 2000×2000. Bounding width happens to bound a square and does
+nothing to a strip.
+
+Three bounds now, at three levels: `limitInputPixels` stated explicitly rather
+than inherited from a dependency default, `maxPixels` capping the area handed to
+OCR, and a deadline on any single recognition after which the worker is
+destroyed and rebuilt — because tesseract.js exposes no abort, so rejecting the
+caller without killing the worker would free the bookkeeping and not the CPU.
+
+**The pixel cap bounds the work to within about 2×, not exactly**, and finding
+that out changed the deadline. Holding the pixel count at the 4M cap and varying
+only the shape, on one core at load 3.97:
+
+| canvas | megapixels | OCR | confidence |
+| --- | --- | --- | --- |
+| 2000×2000 | 4.0 | 12,989ms | 94 |
+| 1265×3162 | 4.0 | **27,628ms** | 94 |
+| 632×6325 | 4.0 | 19,665ms | 88 |
+| 400×10000 | 4.0 | 17,461ms | 57 |
+| 200×20000 | 4.0 | 19,429ms | 55 |
+
+A 2.1× spread at identical pixel counts, and not monotonic in aspect ratio, so
+no simple shape rule tightens it. The first deadline tried here was 30 seconds,
+which that table rejects: it leaves a 1.09× margin over the worst legitimate
+image the cap admits, so it would have fired on real uploads. It is 60 seconds,
+about 2.2× the worst measured case.
+
+The cost of the larger number is real and worth stating: one request can hold
+the single OCR worker for a minute. What bounds that in aggregate is the rate
+limiter — which is exactly why that had to be repaired first.
+
+**Two more places where the caller chose how much work the server did.**
+Ingredient parsing used a quadratic regex, synchronously, on OCR output —
+32ms / 133ms / 600ms / 2666ms at 5k / 10k / 20k / 40k characters, blocking the
+event loop for every other request. It is linear now, and the text is capped
+before it runs. And the result cache had no `maxKeys`, while its keys are
+content hashes of caller-supplied bytes; it is bounded, and evicts rather than
+throwing when full.
+
+All of it is in [DECISIONS.md](./DECISIONS.md) with the reasoning, and covered
+by tests in `back-end/tests/`.
+
 ### What did not work
 
 - **Downscaling the image before OCR.** `maxWidth: 1200` cut the sample from
@@ -424,6 +511,9 @@ Frontend on http://localhost:8080, API on http://localhost:5000.
 | `GROQ_BASE_URL` | back-end | no | Chat-completions endpoint. Only for pointing at `scripts/stub-llm.js` when profiling. |
 | `OCR_POOL_SIZE` | back-end | no | Tesseract workers. Defaults to 1; see the sweep in `services/ocrPool.js`. |
 | `OCR_MAX_QUEUE` | back-end | no | Requests allowed to wait for a worker before new ones get a 503. Defaults to 4. |
+| `OCR_JOB_TIMEOUT_MS` | back-end | no | Ceiling on one recognition, after which the worker is destroyed and rebuilt. Defaults to 60000. |
+| `TRUST_PROXY` | back-end | **read the note** | Number of proxies in front of this process. Defaults to none. Getting this wrong disables the rate limiter — see [Limits and abuse](#limits-and-abuse). |
+| `CORS_ORIGINS` | back-end | no | Comma-separated exact origins. Overrides the built-in list. No wildcards. |
 | `RATE_LIMIT_MAX` / `ANALYZE_RATE_LIMIT_MAX` | back-end | no | Per-IP budgets per 15 min. Default 100 / 20. Raised only by the load test. |
 | `GEMINI_API_KEY` | back-end | no | Enables Gemini Vision OCR ahead of Tesseract. |
 | `PORT` | back-end | no | Defaults to 5000. |
@@ -437,7 +527,7 @@ Frontend on http://localhost:8080, API on http://localhost:5000.
 
 ```bash
 cd back-end
-npm test              # 74 tests, no API key, no network
+npm test              # 86 tests, no API key, no network
 npm run eval          # retrieval evaluation + ablation, reproduces every table above
 npm run ingest        # rebuild the corpus from the live taxonomies
 npm run ocr:benchmark # OCR with and without pre-processing, side by side
@@ -448,6 +538,7 @@ npm run profile       # per-stage breakdown of the request path
 npm run loadtest      # throughput and p50/p95 at rising concurrency
 npm run bench:ocr     # Tesseract worker startup vs recognition
 npm run bench:preprocess  # what each pre-processing setting costs and buys
+npm run bench:bounds  # what an upload can make the server do
 
 cd ../front-end
 npm run lint && npm run build
@@ -518,6 +609,11 @@ argued in [DECISIONS.md](./DECISIONS.md).
   [that was measured and rejected](#what-did-not-work) because it destroys the
   additive codes retrieval depends on. Faster than this means a different OCR
   engine, or doing OCR in the browser.
+- **The API is unauthenticated on purpose, so its bounds carry the whole
+  weight.** A rate limiter that did not work and a pixel cap that bounded only
+  width were both found by review and both fixed; see
+  [Limits and abuse](#limits-and-abuse). If you deploy this behind a proxy, read
+  the `TRUST_PROXY` note there before you do.
 - **These are laptop numbers, not Render numbers.** The free-tier deployment
   could not be re-measured, because it runs the pre-retrieval build and this
   work was not deployed. The earlier README figures for it (22.5s cold, 25.5s

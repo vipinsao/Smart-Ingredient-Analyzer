@@ -80,16 +80,34 @@ export const DEFAULT_MAX_QUEUE = 4;
  * is the one that does not depend on having predicted the input: whatever gets
  * through, it stops after 30s.
  *
- * 30s against a measured 11.4s for a full-page 2000x1500 of dense text on one
- * core - roughly 3x the worst legitimate request seen on the slowest hardware
- * this targets.
+ * 60s, and the first value tried here was 30s, which measurement rejected.
+ *
+ * The pixel cap bounds the work to within a factor of about two, not exactly.
+ * `npm run bench:bounds` holds the pixel count at the 4M cap and varies the
+ * shape; on one core at load 3.97 the same 4.0M pixels measured:
+ *
+ *   2000x2000    12989ms
+ *   1265x3162    27628ms   <- worst
+ *    632x6325    19665ms
+ *    400x10000   17461ms
+ *    200x20000   19429ms
+ *
+ * A 2.1x spread at identical pixel counts, and not monotonic in aspect ratio,
+ * so no simple shape rule tightens it. 30s left a 1.09x margin over the worst
+ * legitimate image the cap admits - it would have fired on real uploads. 60s is
+ * ~2.2x that worst case.
+ *
+ * The cost of the larger number is stated rather than hidden: one request can
+ * hold the single worker for a minute. What bounds that in aggregate is the
+ * rate limiter, which is why it had to be repaired first, and the queue depth
+ * above. It also lands near the point where the browser gives up anyway.
  *
  * A timed-out job cannot be cancelled - tesseract.js exposes no abort - so the
  * worker is terminated and the pool rebuilt. Rejecting the caller while leaving
  * the worker chewing would free the semaphore slot and not the CPU, which is
  * the same denial with better bookkeeping.
  */
-export const DEFAULT_JOB_TIMEOUT_MS = 30_000;
+export const DEFAULT_JOB_TIMEOUT_MS = 60_000;
 
 function readSize(name, fallback) {
   const raw = Number(process.env[name]);

@@ -93,4 +93,48 @@ for (const [name, width, height, note] of SUBJECTS) {
   console.log(`${" ".repeat(18)} | ${note}`);
 }
 
+// ---------------------------------------------------------------------------
+// Does the pixel cap actually bound the work? Hold the pixel count at the cap
+// and vary the shape. If cost tracked pixels alone these rows would be equal.
+// They are not, which is why the per-job deadline is load-bearing rather than a
+// redundant backstop - and why that deadline is sized from the worst row here.
+// ---------------------------------------------------------------------------
+const cap = OCR_PREPROCESS.maxPixels ?? 4_000_000;
+const SHAPES = [
+  [2000, 2000],
+  [1265, 3162],
+  [632, 6325],
+  [400, 10000],
+  [200, 20000],
+];
+
+console.log(`\nSame pixel count (${(cap / 1e6).toFixed(1)}M), different shapes:`);
+console.log(`${"canvas".padStart(13)} | ${"megapixels".padStart(10)} | ${"ocr".padStart(8)} | confidence`);
+console.log(`--------------+------------+----------+-----------`);
+
+for (const [width, height] of SHAPES) {
+  const buffer = await textCanvas(width, height);
+  // Fed straight to OCR: pre-processing would resize these back to a common
+  // shape, and the shape is the variable under test.
+  const image = await sharp(buffer, { limitInputPixels: false })
+    .grayscale()
+    .toColourspace("b-w")
+    .png()
+    .toBuffer();
+
+  const started = performance.now();
+  try {
+    const { data } = await recognize(image);
+    console.log(
+      `${`${width}x${height}`.padStart(13)} | ${((width * height) / 1e6).toFixed(1).padStart(10)} | ` +
+        `${`${Math.round(performance.now() - started)}ms`.padStart(8)} | ${Math.round(data.confidence)}`
+    );
+  } catch (error) {
+    console.log(
+      `${`${width}x${height}`.padStart(13)} | ${((width * height) / 1e6).toFixed(1).padStart(10)} | ` +
+        `${`${Math.round(performance.now() - started)}ms`.padStart(8)} | ${error.code}`
+    );
+  }
+}
+
 await terminateOcrPool();

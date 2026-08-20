@@ -299,12 +299,142 @@ single free-tier container, and the wrong shape for anything larger.
 There is a global limiter, and a tighter one on `POST /api/analyze`
 specifically, because that is the route that burns OCR CPU and a model call.
 
-`app.set("trust proxy", 1)` is set because the app runs behind a platform proxy.
-Without it every request appears to come from the proxy's address and the
-"per-IP" limiter becomes one shared global bucket. The value is `1`, not `true`:
-trusting one hop reads the address the platform put there, while trusting
-everything would let a client set its own `X-Forwarded-For` and walk around the
-limiter.
+### `trust proxy` defaults to none, and the previous reasoning here was wrong
+
+This document used to say that `app.set("trust proxy", 1)` was the safe choice
+because "trusting one hop reads the address the platform put there, while
+trusting everything would let a client set its own `X-Forwarded-For`". That is
+not what the setting does. Any non-`false` value makes Express read `req.ip` out
+of the client-supplied header. `1` does not verify that a proxy exists; it takes
+the last entry of whatever the client sent.
+
+And this project's own shipped topology has no proxy in front of it:
+`docker-compose.yml` publishes `5000:5000`, and `front-end/nginx.conf` serves
+static assets with no `proxy_pass`, so the browser calls the API directly.
+
+Measured against this repo's configuration — express 4.21.2,
+express-rate-limit 8.0.1, `/api/analyze` budget 20 per 15 minutes, 300 requests
+from one machine:
+
+| configuration | allowed | blocked |
+| --- | --- | --- |
+| `trust proxy: 1`, no header | 20 | 280 |
+| `trust proxy: 1`, rotating `X-Forwarded-For` | **300** | **0** |
+| `trust proxy: false`, rotating `X-Forwarded-For` | 20 | 280 |
+
+The limiter was not weakened, it was absent. On an unauthenticated route that
+spends the owner's API key and the container's only CPU, that is the finding
+that makes every other abuse finding exploitable at will rather than
+opportunistically.
+
+express-rate-limit ships a validator for this and it does **not** flag `1` — it
+only errors on `true` — which is why a wrong comment and a wrong value survived
+review together.
+
+`TRUST_PROXY` now defaults to `false` and accepts a hop count or a list of proxy
+addresses. `true` is refused with a warning. The deployment that genuinely sits
+behind one proxy sets `TRUST_PROXY=1` and says so out loud.
+
+### CORS lists exact origins
+
+The production list used to end with `/\.vercel\.app$/`. The API is
+unauthenticated, so CORS was never protecting data here — but that regex matches
+any site anybody deploys to Vercel, which let an attacker's page drive its
+visitors' browsers into `/api/analyze`. That spends this project's Groq quota
+from residential addresses that a per-IP limiter correctly sees as unrelated
+people. Exact origins only, overridable through `CORS_ORIGINS`.
+
+## Bounding one dimension is not bounding the work
+
+The size checks on an upload are `express.json({ limit: "12mb" })` and an 8MB
+check on the decoded buffer. Both bound **encoded bytes**. Nothing bounded the
+pixels those bytes decode to, and Tesseract's runtime tracks pixels.
+
+`targetWidth()` returned `Math.min(originalWidth, maxWidth)`. `metadata.height`
+was read only to check it was non-zero. So an image that is already narrow
+enough received no downscale at all, however tall it was, and aspect ratio
+walked straight around the cap.
+
+Measured on one core, text-filled canvases, with `npm run bench:bounds`:
+
+| upload | wire | pixels | after pre-processing | cost |
+| --- | --- | --- | --- | --- |
+| 2000×1500 | 0.39MB | 3.0M | 2000×1500 — unchanged | 11.4s |
+| 2000×20000 | **5.46MB** | 40.0M | **2000×20000 — unchanged** | **126.2s** |
+| 16383×16383 | 8.30MB | 268.4M | 2000×2000 | 13.4s |
+
+11.1× the cost of a normal label, from a file well inside the 8MB allowance.
+Five of them held the single OCR worker for ten minutes, and the queue bound
+above them turned a defence into the mechanism: everyone else got an instant
+503.
+
+The square case is the instructive one. It is **not** saved by sharp's default
+pixel limit — 16383² is 268,402,689, which is that limit exactly, so it passes.
+It is saved by the width cap, which downscales it to 2000×2000 while preserving
+aspect ratio. Bounding width happens to bound a square. It does nothing for a
+strip.
+
+Three bounds now, at three different levels:
+
+- **`limitInputPixels` is stated rather than inherited.** `grep -rn
+  limitInputPixels back-end/` used to return nothing, so the guarantee lived in
+  a dependency default that a version bump could change in silence.
+- **`maxPixels` caps the area handed to OCR**, scaling uniformly so a tall
+  receipt is shrunk rather than cropped or refused. 4M is 2000×2000: above the
+  1.9M of this repo's own sample, so no real label is downscaled by it that the
+  width cap was not already downscaling.
+- **A per-recognition deadline**, after which the worker is destroyed and the
+  pool rebuilt. tesseract.js exposes no abort, so rejecting the caller while
+  leaving the worker running would free the bookkeeping and not the CPU.
+
+The first two make a hostile upload cost no more than a legitimate one. The
+third is the backstop for the shape nobody predicted. Neither replaces the rate
+limiter, which is why that had to be fixed first.
+
+## Two bounds on work that the caller chooses
+
+The same failure — a caller choosing how much work the server does — appeared in
+two more places, and both are bounded by the same reasoning rather than by
+guesswork about attacker behaviour.
+
+**Ingredient parsing was quadratic.** `/\b(?!ins)\d+(?!\d*%|ins)\b/gi` re-scans
+the rest of a digit run inside the lookahead at every backtrack position. It
+runs synchronously, on the request thread, over whatever Tesseract produced.
+Measured on a digit run followed by `ins`, at 5k/10k/20k/40k characters:
+32ms / 133ms / 600ms / 2666ms — a clean 4× per doubling. The replacement,
+`/\b\d+\b(?!%)/g`, measures 0ms on all four.
+
+Both guards the old pattern dropped were already dead. `(?!ins)` sat between a
+word boundary and `\d+`, so it could never match anything. The `ins` half of the
+trailing lookahead was already enforced by `\b`, because a digit followed by a
+letter is not a word boundary — which is exactly what keeps `INS1422` intact.
+OCR text is also truncated before parsing, because a linear pass over an
+unbounded string is still unbounded.
+
+**The result cache had no `maxKeys`.** Its keys are content hashes and the
+caller supplies the content — and appending one byte after a JPEG's EOI marker
+changes the hash without changing a pixel, a trick this repo's own
+`scripts/profile-analyze.js` documents and relies on. Every distinct byte string
+bought a 48-hour entry. It is bounded now, and `CacheManager.set` evicts the
+oldest entry rather than letting node-cache throw `ECACHEFULL`, which would have
+traded a memory leak for an outage.
+
+## Anything that has not named itself development is production
+
+`errorHandler` attached internal detail to responses whenever
+`NODE_ENV !== "production"`. Every other value that variable can hold — `prod`,
+`Production`, `staging`, a typo, or the empty string a container gets when the
+variable is dropped — took the development branch and started talking.
+
+It is a deny-list now: detail is attached only when `NODE_ENV` is explicitly
+`development` or `test`. It also reads the raw variable rather than the
+`env.NODE_ENV` that falls back to `"development"`, because that fallback is a
+reasonable default for choosing a port and the wrong one for deciding whether to
+expose internals.
+
+Choosing the CORS origin list still keys off `env.NODE_ENV`, because there the
+unset case already fails closed — the development list is localhost-only, which
+is narrower than production's, not wider.
 
 ## Errors are typed, and mapped in one place
 
