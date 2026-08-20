@@ -352,10 +352,16 @@ app.post("/api/analyze", analyzeLimiter, async (req, res, next) => {
       grounded: analysisResult.grounded,
       degradedReason: analysisResult.degradedReason,
       sourcesConsulted: analysisResult.contextChunks,
+      // Coverage arithmetic that reconciles: on the grounded path every
+      // ingredient considered is either analysed or uncovered, exactly once,
+      // so analysed + uncovered === parsed. The degraded path answers from a
+      // prompt built on raw text rather than on this list and reports no
+      // reconciliation instead of an unsound one.
       coverage: {
-        parsed: analysisResult.ingredientsParsed.length,
+        parsed: (analysisResult.ingredientsConsidered ?? analysisResult.ingredientsParsed).length,
         analysed: analysisResult.analysis.length,
         uncovered: analysisResult.uncovered.length,
+        reconciled: analysisResult.ingredientsConsidered !== null,
       },
       healthScore,
       allergens,

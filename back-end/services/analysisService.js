@@ -46,6 +46,12 @@ export async function analyzeIngredients(ingredientsText, { isMobile = false, fa
       grounded: true,
       analysis: result.verdicts,
       uncovered: result.uncovered,
+      // What the grounded path actually put a name to. It equals `names` for
+      // any list parseIngredientList produced (same 25-item limit), and is
+      // carried explicitly rather than assumed so `coverage` is rendered from
+      // a number the analysis returned rather than from one the caller hopes
+      // matches it.
+      ingredientsConsidered: result.considered ?? names,
       contextChunks: result.contextChunks,
       attempts: result.attempts,
       droppedRows: result.droppedRows ?? 0,
@@ -71,6 +77,12 @@ export async function analyzeIngredients(ingredientsText, { isMobile = false, fa
         "The reference corpus could not produce a cited answer for this label, so these verdicts are the model's own and carry no source.",
       analysis: fallback.analysis.map((verdict) => ({ ...verdict, citations: [], sources: [] })),
       uncovered: [],
+      // The ungrounded prompt is handed the raw ingredient TEXT, not this
+      // parsed list, so its verdict names are its own and cannot be
+      // reconciled against `names` without discarding real verdicts. The
+      // degraded payload therefore reports no coverage reconciliation at all
+      // rather than an arithmetic that does not hold.
+      ingredientsConsidered: null,
       contextChunks: [],
       attempts: fallback.attempts,
       droppedRows: fallback.droppedRows ?? 0,

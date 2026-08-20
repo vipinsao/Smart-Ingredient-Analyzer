@@ -12,6 +12,36 @@ const getScoreBg = (score) => {
   return "bg-red-50 border-red-200";
 };
 
+// Why an ingredient carries no verdict. Three different facts, three
+// different headings: the backend now tags each `uncovered` entry with a code
+// (rag/groundedAnalysis.js), because rendering "no authoritative source found"
+// over an ingredient whose sources WERE found and were then dropped to fit the
+// prompt is the one lie this app must never tell.
+const UNCOVERED_GROUPS = [
+  {
+    code: "NO_SOURCE",
+    title: "No authoritative source found",
+    blurb:
+      "These ingredients were read off the label but are not described in the reference corpus, so no verdict is given for them. The corpus covers regulated food additives and allergens, not whole foods.",
+  },
+  {
+    code: "MODEL_DECLINED",
+    title: "Sources found, but they did not settle it",
+    blurb:
+      "The reference passages for these ingredients were retrieved and put to the analyst, which declined to draw a verdict from them.",
+  },
+  {
+    code: "BUDGET_DROPPED",
+    title: "Not analysed - too many ingredients in one request",
+    blurb:
+      "Sources for these ingredients were found, but this label carried more ingredients than one request sends evidence for, so they were never analysed. This is a limit of the request, not a gap in the corpus - analyse a shorter list to get a verdict.",
+  },
+];
+
+// An entry from before the codes existed, or one from a path that does not set
+// them, is still an honest "no source found" - that was the only category then.
+const groupOf = (entry) => entry.code || "NO_SOURCE";
+
 const statusStyle = (status) =>
   status === "Good"
     ? "bg-green-100 text-green-800 border-green-200"
@@ -52,7 +82,7 @@ const AnalysisResult = ({
             {coverage && (
               <p className="text-xs text-gray-600 mt-2">
                 Scored on {coverage.analysed} of {coverage.parsed} ingredients read from the label.
-                {coverage.uncovered > 0 && ` ${coverage.uncovered} are not covered by the reference corpus.`}
+                {coverage.uncovered > 0 && ` ${coverage.uncovered} carry no verdict, listed with the reason below.`}
               </p>
             )}
           </div>
@@ -159,22 +189,24 @@ const AnalysisResult = ({
     </div>
 
     {/* Reporting the gap, rather than filling it with a guess. */}
-    {uncovered.length > 0 && (
-      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4 sm:p-6">
-        <h3 className="font-bold text-slate-800 mb-2 text-base">No authoritative source found</h3>
-        <p className="text-xs text-slate-600 mb-3">
-          These ingredients were read off the label but are not described in the reference corpus, so no verdict is
-          given for them. The corpus covers regulated food additives and allergens, not whole foods.
-        </p>
-        <div className="flex flex-wrap gap-2">
-          {uncovered.map((entry) => (
-            <span key={entry.ingredient} className="bg-white text-slate-700 px-3 py-1.5 rounded-full text-sm border border-slate-200">
-              {entry.ingredient}
-            </span>
-          ))}
+    {UNCOVERED_GROUPS.map(({ code, title, blurb }) => {
+      const entries = uncovered.filter((entry) => groupOf(entry) === code);
+      if (entries.length === 0) return null;
+
+      return (
+        <div key={code} className="bg-slate-50 border border-slate-200 rounded-2xl p-4 sm:p-6">
+          <h3 className="font-bold text-slate-800 mb-2 text-base">{title}</h3>
+          <p className="text-xs text-slate-600 mb-3">{blurb}</p>
+          <div className="flex flex-wrap gap-2">
+            {entries.map((entry) => (
+              <span key={entry.ingredient} className="bg-white text-slate-700 px-3 py-1.5 rounded-full text-sm border border-slate-200">
+                {entry.ingredient}
+              </span>
+            ))}
+          </div>
         </div>
-      </div>
-    )}
+      );
+    })}
 
     <p className="text-center text-xs text-gray-500 px-4">
       Not medical or dietary advice. Verdicts are generated from Open Food Facts passages and are not reviewed by a

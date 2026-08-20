@@ -17,7 +17,43 @@ import logger from "../utils/logger.js";
 
 export const MAX_INGREDIENTS = 25;
 export const CHUNKS_PER_INGREDIENT = 3;
+
+// Target size of the passage block in the prompt.
+//
+// A target, not a hard ceiling: `contextBudgetFor` raises it to the number of
+// ingredients that actually have evidence. See the comment there for why the
+// budget is the thing that bends.
 export const MAX_CONTEXT_CHUNKS = 24;
+
+/**
+ * Why an ingredient carries no verdict.
+ *
+ * These are three different facts about the world and they must not share one
+ * sentence:
+ *
+ *   NO_SOURCE      - retrieval found nothing above threshold. The corpus does
+ *                    not cover this ingredient. This is the honest gap, and
+ *                    reporting it is what this module is for.
+ *   MODEL_DECLINED - passages WERE put in front of the model and it still
+ *                    would not rule.
+ *   BUDGET_DROPPED - passages were retrieved, cleared both thresholds, and
+ *                    were then dropped to fit the prompt. Nothing was asked
+ *                    about this ingredient at all.
+ *
+ * The third used to be reported as the second, which read to the user as the
+ * first. Every ingredient that cleared retrieval was pushed onto the prompt's
+ * ingredient list, but its passages were only added while the shared
+ * MAX_CONTEXT_CHUNKS budget lasted - so past roughly eight ingredients the
+ * later ones were named in the prompt with none of their evidence attached.
+ * The model correctly declined, and the sweep below announced "Retrieved
+ * passages did not support a verdict" about passages that had supported one
+ * perfectly well and were then deleted. For a tool whose entire product is
+ * that the gap it reports can be trusted, a misattributed gap is the worst
+ * available failure, so the three now travel with a code.
+ */
+export const UNCOVERED_NO_SOURCE = "NO_SOURCE";
+export const UNCOVERED_MODEL_DECLINED = "MODEL_DECLINED";
+export const UNCOVERED_BUDGET_DROPPED = "BUDGET_DROPPED";
 
 export const groundedVerdictSchema = z.object({
   ingredient: z.string().trim().min(1),
@@ -58,6 +94,154 @@ export function buildContextBlock(chunks) {
   });
 
   return { block: lines.join("\n\n"), byId };
+}
+
+/**
+ * The passage budget for one request.
+ *
+ * Bounding the prompt is a real constraint - 25 ingredients times 3 passages
+ * is a prompt several times larger than the answer it asks for - so
+ * MAX_CONTEXT_CHUNKS stays. What cannot stay is a budget below one passage per
+ * ingredient, because that does not shrink the prompt honestly: it deletes the
+ * evidence and leaves the question, which is exactly how the truncation defect
+ * manufactured a false gap report.
+ *
+ * So the budget bends before the guarantee does. MAX_INGREDIENTS caps the
+ * floor at 25 - one passage above the target, not an unbounded prompt.
+ */
+export function contextBudgetFor(ingredientCount, target = MAX_CONTEXT_CHUNKS) {
+  return Math.max(target, ingredientCount);
+}
+
+/**
+ * Fair-share the passage budget across ingredients instead of spending it
+ * front to back.
+ *
+ * Round n hands every ingredient its n-th best passage before any ingredient
+ * receives its (n+1)-th. A budget of at least one per ingredient therefore
+ * covers every ingredient, and any shortfall costs the *supporting* passages
+ * of the last ingredients rather than every passage of some of them.
+ *
+ * An ingredient whose top passage was already selected for an earlier
+ * ingredient counts as covered: the evidence is in the prompt, which is the
+ * only thing that matters here.
+ *
+ * `dropped` is the guard. With the budget floor above it is empty, but it is
+ * returned rather than assumed so that a future budget change surfaces as a
+ * named category instead of as a silent lie about retrieval.
+ *
+ * @param {{name: string, results: Array}[]} retrieved
+ * @param {number} budget
+ * @returns {{chunks: Array, covered: string[], dropped: string[]}}
+ */
+export function selectContextChunks(retrieved, budget) {
+  const chunks = [];
+  const seen = new Set();
+  const covered = new Set();
+  const rounds = retrieved.reduce((most, entry) => Math.max(most, entry.results.length), 0);
+
+  for (let round = 0; round < rounds; round += 1) {
+    for (const entry of retrieved) {
+      const chunk = entry.results[round];
+      if (!chunk) continue;
+      if (seen.has(chunk.id)) {
+        covered.add(entry.name);
+        continue;
+      }
+      if (chunks.length >= budget) continue;
+      seen.add(chunk.id);
+      chunks.push(chunk);
+      covered.add(entry.name);
+    }
+  }
+
+  return {
+    chunks,
+    covered: retrieved.filter((entry) => covered.has(entry.name)).map((entry) => entry.name),
+    dropped: retrieved.filter((entry) => !covered.has(entry.name)).map((entry) => entry.name),
+  };
+}
+
+/** Fold a free-text ingredient name to a comparison key. */
+export function ingredientKey(name) {
+  return String(name)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/**
+ * The keys one ingredient name may legitimately be written as.
+ *
+ * A label says "Sodium Benzoate (E211)"; a model answering about it writes
+ * "sodium benzoate", or occasionally "E211". All three are the same
+ * ingredient, and they are the only three - this deliberately does not do
+ * fuzzy or substring matching, because "sugar" matching "sugar syrup" would
+ * attribute a verdict to an ingredient nobody ruled on, which is the same
+ * class of error as the one this file exists to prevent.
+ */
+export function ingredientKeys(name) {
+  const text = String(name);
+  const keys = [ingredientKey(text)];
+
+  const withoutParens = ingredientKey(text.replace(/\([^)]*\)/g, " "));
+  if (withoutParens) keys.push(withoutParens);
+
+  for (const match of text.matchAll(/\(([^)]*)\)/g)) {
+    const inner = ingredientKey(match[1]);
+    if (inner) keys.push(inner);
+  }
+
+  return [...new Set(keys.filter(Boolean))];
+}
+
+/**
+ * Attribute each verdict back to the ingredient that was asked about.
+ *
+ * The model writes the `ingredient` field itself and does not always echo the
+ * label's wording - "Sodium Benzoate (E211)" comes back as "sodium benzoate".
+ * Comparing those with an exact lowercased `===` counted the same ingredient
+ * as an answer in `analysis` and as a non-answer in `uncovered` at the same
+ * time, so `coverage.analysed + coverage.uncovered` exceeded `coverage.parsed`
+ * - a coverage report that does not add up is not a coverage report.
+ *
+ * Matched verdicts are relabelled with the label's own wording so every list
+ * the caller renders is keyed on the same names. A verdict naming no requested
+ * ingredient - or a second verdict for one already answered - is not an answer
+ * to a question that was asked, and is returned separately rather than counted.
+ *
+ * @returns {{matched: Array, unmatched: Array, unanswered: string[]}}
+ */
+export function matchVerdictsToNames(verdicts, names) {
+  // First writing of a key wins, so two label entries that fold to the same
+  // alias ("Sugar (cane)" and "Sugar (invert)" both fold to "sugar") resolve
+  // to the earlier one and the second verdict lands in `unmatched` rather than
+  // being counted twice.
+  const byKey = new Map();
+  for (const name of names) {
+    for (const key of ingredientKeys(name)) {
+      if (!byKey.has(key)) byKey.set(key, name);
+    }
+  }
+
+  const matched = [];
+  const unmatched = [];
+  const answered = new Set();
+
+  for (const verdict of verdicts) {
+    const name = ingredientKeys(verdict.ingredient)
+      .map((key) => byKey.get(key))
+      .find(Boolean);
+
+    if (!name || answered.has(name)) {
+      unmatched.push(verdict);
+      continue;
+    }
+    answered.add(name);
+    matched.push({ ...verdict, ingredient: name });
+  }
+
+  return { matched, unmatched, unanswered: names.filter((name) => !answered.has(name)) };
 }
 
 /**
@@ -141,7 +325,10 @@ function parseJsonArray(text, extractJsonArray) {
  *        `complete` and `extractJsonArray` are injected so the whole grounded
  *        path is testable without an API key.
  */
-export async function analyzeGrounded(ingredientNames, { retriever, complete, extractJsonArray }) {
+export async function analyzeGrounded(
+  ingredientNames,
+  { retriever, complete, extractJsonArray, maxContextChunks = MAX_CONTEXT_CHUNKS }
+) {
   const names = [...new Set(ingredientNames.map((name) => name.trim()).filter(Boolean))].slice(0, MAX_INGREDIENTS);
 
   if (names.length === 0) {
@@ -150,10 +337,8 @@ export async function analyzeGrounded(ingredientNames, { retriever, complete, ex
 
   // 1. Retrieve per ingredient. An ingredient whose retrieval abstains never
   //    reaches the model.
-  const grounded = [];
+  const retrieved = [];
   const uncovered = [];
-  const chunkOrder = [];
-  const seenChunks = new Set();
 
   // Retrieval and generation are timed apart. They are the two halves of this
   // function and they are slow for entirely different reasons - one is our own
@@ -165,28 +350,59 @@ export async function analyzeGrounded(ingredientNames, { retriever, complete, ex
   for (const name of names) {
     const outcome = await retriever.retrieve(name, { topK: CHUNKS_PER_INGREDIENT });
 
-    if (outcome.abstain) {
+    // No passages is the same fact as abstaining: nothing was found. Letting
+    // it through here would name the ingredient in the prompt with no evidence
+    // behind it, which is the defect this whole path was rewritten to remove.
+    if (outcome.abstain || outcome.results.length === 0) {
       uncovered.push({
         ingredient: name,
+        code: UNCOVERED_NO_SOURCE,
         reason: "No authoritative source found for this ingredient in the Open Food Facts corpus.",
-        topCosine: Number(outcome.topCosine.toFixed(3)),
+        topCosine: Number((outcome.topCosine ?? 0).toFixed(3)),
       });
       continue;
     }
 
-    grounded.push(name);
-    for (const chunk of outcome.results) {
-      if (seenChunks.has(chunk.id) || chunkOrder.length >= MAX_CONTEXT_CHUNKS) continue;
-      seenChunks.add(chunk.id);
-      chunkOrder.push(chunk);
-    }
+    retrieved.push({ name, results: outcome.results });
   }
 
   const retrievalMs = Math.round(performance.now() - startedRetrieval);
 
+  // 1b. Select the passages BEFORE naming the ingredients, and name only the
+  //     ingredients whose passages survived selection. The prompt can then
+  //     only ask about evidence it is actually carrying.
+  const budget = contextBudgetFor(retrieved.length, maxContextChunks);
+  const { chunks: chunkOrder, covered: grounded, dropped } = selectContextChunks(retrieved, budget);
+
+  for (const name of dropped) {
+    uncovered.push({
+      ingredient: name,
+      code: UNCOVERED_BUDGET_DROPPED,
+      reason:
+        "Sources for this ingredient were retrieved but did not fit this request's evidence budget, so it was never put to the model. Analyse a shorter ingredient list for a verdict on it.",
+    });
+  }
+
+  if (dropped.length > 0) {
+    logger.warn("grounded analysis: evidence budget dropped ingredients", {
+      dropped: dropped.length,
+      budget,
+      ingredients: retrieved.length,
+    });
+  }
+
   if (grounded.length === 0) {
     logger.info("grounded analysis abstained for every ingredient", { ingredients: names.length });
-    return { verdicts: [], uncovered, contextChunks: [], attempts: 0, grounded: true, retrievalMs, modelMs: 0 };
+    return {
+      verdicts: [],
+      uncovered,
+      contextChunks: [],
+      attempts: 0,
+      grounded: true,
+      considered: names,
+      retrievalMs,
+      modelMs: 0,
+    };
   }
 
   const { block, byId } = buildContextBlock(chunkOrder);
@@ -221,43 +437,51 @@ export async function analyzeGrounded(ingredientNames, { retriever, complete, ex
     }
 
     const { valid, invalid } = validateCitations(parsed, allowedIds);
+    const { matched, unmatched, unanswered } = matchVerdictsToNames(valid, grounded);
 
-    if (valid.length === 0) {
+    if (matched.length === 0) {
       lastFailure =
         invalid.length > 0
           ? invalid[0].reason
-          : `every row failed schema validation (${schemaRejected} rows)`;
+          : unmatched.length > 0
+            ? "no verdict named an ingredient from the label"
+            : `every row failed schema validation (${schemaRejected} rows)`;
       logger.warn("grounded analysis: no citable verdicts", { attempt, reason: lastFailure });
       continue;
     }
 
-    // 3. An ingredient the model silently dropped is uncovered, not missing.
-    //    Say which, rather than quietly returning a shorter list.
-    const answered = new Set(valid.map((verdict) => verdict.ingredient.toLowerCase()));
-    for (const name of grounded) {
-      if (!answered.has(name.toLowerCase())) {
-        uncovered.push({
-          ingredient: name,
-          reason: "Retrieved passages did not support a verdict for this ingredient.",
-        });
-      }
+    // 3. An ingredient that was named in the prompt WITH its passages and that
+    //    the model still would not rule on is uncovered for that reason and
+    //    for no other. Every other reason left this list above, carrying its
+    //    own code.
+    for (const name of unanswered) {
+      uncovered.push({
+        ingredient: name,
+        code: UNCOVERED_MODEL_DECLINED,
+        reason: "Retrieved passages did not support a verdict for this ingredient.",
+      });
     }
 
-    if (invalid.length > 0 || schemaRejected > 0) {
+    if (invalid.length > 0 || schemaRejected > 0 || unmatched.length > 0) {
       logger.warn("grounded analysis: dropped unusable rows", {
         attempt,
         uncitable: invalid.length,
         schemaRejected,
+        unattributable: unmatched.length,
       });
     }
 
     return {
-      verdicts: attachSources(valid, byId),
+      verdicts: attachSources(matched, byId),
       uncovered,
       contextChunks: chunkOrder.map((chunk) => ({ id: chunk.id, title: chunk.title, source: chunk.source })),
       attempts: attempt,
-      droppedRows: invalid.length + schemaRejected,
+      droppedRows: invalid.length + schemaRejected + unmatched.length,
       grounded: true,
+      // Every name this call actually considered. verdicts.length +
+      // uncovered.length === considered.length, always: that is the invariant
+      // `coverage` is rendered from.
+      considered: names,
       retrievalMs,
       modelMs,
     };
@@ -270,4 +494,16 @@ export async function analyzeGrounded(ingredientNames, { retriever, complete, ex
   });
 }
 
-export default { analyzeGrounded, buildContextBlock, validateCitations, attachSources, buildPrompt, buildRetryPrompt };
+export default {
+  analyzeGrounded,
+  buildContextBlock,
+  contextBudgetFor,
+  selectContextChunks,
+  ingredientKey,
+  ingredientKeys,
+  matchVerdictsToNames,
+  validateCitations,
+  attachSources,
+  buildPrompt,
+  buildRetryPrompt,
+};
