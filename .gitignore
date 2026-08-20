@@ -1,2 +1,10 @@
 node_modules/
+dist/
+
+# Secrets. .env.example files are committed; filled-in .env files are not.
 .env
+.env.*
+!.env.example
+
+*.log
+.DS_Store

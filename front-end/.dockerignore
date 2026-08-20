@@ -1,8 +1,10 @@
 node_modules
 dist
-.dockerignore
-Dockerfile
 .git
 .gitignore
 .env
+.env.*
+!.env.example
 *.log
+Dockerfile
+.dockerignore
