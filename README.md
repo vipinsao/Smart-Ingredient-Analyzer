@@ -636,3 +636,9 @@ The retrieval corpus in `back-end/rag/corpus/` is a derived database licensed
 under **ODbL v1.0**, not MIT. It contains information from Open Food Facts,
 made available under the Open Database License. See
 [`back-end/rag/CORPUS.md`](./back-end/rag/CORPUS.md).
+
+## Licence
+
+Source code: MIT (see `LICENSE`).
+The retrieval corpus is Open Food Facts data under ODbL — see `NOTICE` and
+`back-end/rag/CORPUS.md`.

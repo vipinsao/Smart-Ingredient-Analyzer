@@ -1,0 +1,21 @@
+Third-party data notice
+=======================
+
+The MIT licence in LICENSE covers the source code in this repository.
+
+It does NOT cover the retrieval corpus in `back-end/rag/corpus/`. That corpus is
+a derived database built from Open Food Facts taxonomies and is licensed under
+the Open Database License (ODbL) v1.0:
+https://opendatacommons.org/licenses/odbl/1-0/
+
+Contains information from Open Food Facts, which is made available under the
+Open Database License. Individual contents of the database are available under
+the Database Contents License:
+https://opendatacommons.org/licenses/dbcl/1-0/
+
+See back-end/rag/CORPUS.md for what that requires and how this project meets it.
+
+This notice lives here rather than appended to LICENSE because GitHub's licence
+detector matches LICENSE as a whole: with the paragraphs above inside it, the
+file resolved to "NOASSERTION" and the repository displayed no licence at all.
+Splitting them keeps the attribution and restores the licence.
