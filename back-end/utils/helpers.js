@@ -120,7 +120,15 @@ export class AnalysisHelpers {
       // trailing lookahead is already enforced by `\b`, since a digit followed
       // by a letter is not a word boundary - which is also what keeps
       // "INS1422" intact.
-      .replace(/\b\d+\b(?!%)/g, "")
+      // The colour lookbehind is not decoration: a bare `\b\d+\b` strip
+      // deletes the number out of the entire US colour-additive convention, so
+      // "RED 40" reached retrieval as "RED". Red 40 is E129 Allura Red - in the
+      // corpus, and exactly what somebody opens this app to look up. It was
+      // landing in the "no authoritative source found" bucket as a chip reading
+      // "RED". Stray quantities ("SUGAR 25 G") are still stripped, and E621 /
+      // INS1422 were never at risk: a digit preceded by a letter is not a word
+      // boundary. Measured at 0ms on the 40k-digit run the comment above is about.
+      .replace(/(?<!\b(?:red|yellow|blue|green|orange)\s)\b\d+\b(?!%)/gi, "")
       .replace(/\b[a-zA-Z]{1}\b/g, "")
       .replace(/,\s*,/g, ",")
       .replace(/\(\s*\)/g, "")

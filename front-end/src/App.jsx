@@ -10,7 +10,18 @@ import { compressImage, detectDeviceCapabilities } from "./utils/imageUtils";
 
 // Client-side request budget. Must stay above the backend's worst case
 // (OCR + the model call), or the browser aborts work the server completed.
-const REQUEST_TIMEOUT_MS = 60000;
+//
+// 60s was still too short. The backend suspends after ~15 minutes idle, and a
+// measured cold start put the Node process at ~28s before it served anything;
+// the analyse request that followed exhausted 60s and aborted, so the first
+// visitor after a quiet spell got a hard failure. The budget now covers a cold
+// boot plus the warm worst case rather than only the warm one.
+const REQUEST_TIMEOUT_MS = 120000;
+
+// The wake-up request must outlive the cold start it exists to absorb. At 30s
+// it was aborting before the server had finished booting - which is precisely
+// when it was needed.
+const PREWARM_TIMEOUT_MS = 120000;
 
 function App() {
   const webcamRef = useRef(null);
@@ -31,6 +42,10 @@ function App() {
   });
 
   const [analysisReady, setAnalysisReady] = useState(false);
+  // Whether the wake-up request has come back. Read through a ref inside the
+  // async handler so it sees the current value, not the one captured at click.
+  const [serverWarm, setServerWarm] = useState(false);
+  const serverWarmRef = useRef(false);
   const [fullResults, setFullResults] = useState(null);
 
   // Detect device capabilities on mount
@@ -53,6 +68,10 @@ function App() {
     return null;
   }, []);
 
+  useEffect(() => {
+    serverWarmRef.current = serverWarm;
+  }, [serverWarm]);
+
   // Wake the API while the visitor is still choosing an image.
   //
   // The backend runs on a tier that suspends after about 15 minutes idle, and
@@ -70,9 +89,10 @@ function App() {
     if (!api) return;
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 30000);
+    const timeoutId = setTimeout(() => controller.abort(), PREWARM_TIMEOUT_MS);
 
     fetch(`${api}/health`, { signal: controller.signal })
+      .then(() => setServerWarm(true))
       .catch(() => {})
       .finally(() => clearTimeout(timeoutId));
 
@@ -212,7 +232,13 @@ function App() {
       if (error.userFacing) {
         errorMsg = `❌ ${error.message}`;
       } else if (error.name === 'AbortError') {
-        errorMsg = "❌ The analysis took too long. Please try a clearer, smaller image.";
+        // This used to read "try a clearer, smaller image", which blames the
+        // user for the host's cold start: the image that produced it was 44 kB
+        // and perfectly legible. The server going back to sleep is the far
+        // likelier cause and the only one the visitor can act on.
+        errorMsg = serverWarmRef.current
+          ? "❌ The analysis timed out. Please try again."
+          : "❌ The free-tier server was still waking up and did not answer in time. Press Analyse again — the second attempt is usually fast.";
       } else if (String(error.message).includes('Failed to fetch')) {
         errorMsg = "❌ Network error. Please check your internet connection.";
       }
